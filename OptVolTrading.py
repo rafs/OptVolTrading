@@ -62,30 +62,6 @@ class CVolTradingStrategy(object):
         self.min_pandl_path = cfg.get('path', 'min_pandl_path')
         self.opt_holdings_path = cfg.get('path', 'opt_holdings_path')
 
-    # def set_logging(self):
-    #     """设置日志参数"""
-    #     # 创建logger
-    #     self.logger = logging.getLogger('OptVolTrading')
-    #     # 设置level为DEBUG
-    #     self.logger.setLevel(logging.DEBUG)
-    #     # 创建一个handler，用于写入日志文件
-    #     fh = logging.FileHandler('logger.log')
-    #     # 创建一个handler，用于输出到控制台
-    #     ch = logging.StreamHandler()
-    #     # 定义handler的输出格式formatter
-    #     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    #     fh.setFormatter(formatter)
-    #     ch.setFormatter(formatter)
-    #     # 给logger添加handler
-    #     self.logger.addHandler(fh)
-    #     self.logger.addHandler(ch)
-    #
-    #     # 设置持仓的日志类
-    #     self.opt_holdings.logger = logging.getLogger('OptVolTrading.holdings')
-    #     self.opt_holdings.logger.setLevel(logging.DEBUG)
-    #     self.opt_holdings.logger.addHandler(fh)
-    #     self.opt_holdings.logger.addHandler(ch)
-
     def load_riskfree_hist(self):
         """导入无风险利率历史数据"""
         self.df_riskfree = pd.read_csv('./data/riskfree.csv', index_col=0, parse_dates=[0])
