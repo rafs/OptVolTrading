@@ -151,6 +151,16 @@ class CVolTrendTradingStrategy(object):
         strfilepath = '../opt_quote/' + strdate + '/510050ETF.csv'
         self.underlying_quote_1min = pd.read_csv(strfilepath, usecols=range(7), index_col=0, parse_dates=[0])
 
+    def load_trading_datas(self, trading_day):
+        """
+        导入交易日交易相关数据，包含期权基本信息数据、期权分钟数据、标的分钟数据
+        :param trading_day: 日期（类型=datetime.date）
+        :return:
+        """
+        self.load_opt_basic_data(trading_day)
+        self.load_opt_1min_quote(trading_day)
+        self.load_underlying_1min_quote(trading_day)
+
     def calc_opt_margin(self, trading_day):
         """
         计算样本期权和持仓期权的开仓保证金，每个交易日开盘前计算一次
@@ -266,12 +276,13 @@ class CVolTrendTradingStrategy(object):
         # 6.返回建仓完成时的交易时间，=最后一笔建仓时间的后一分钟
         return trading_beg_datetime + datetime.timedelta(minutes=trading_min_num)
 
-    def do_liquidation(self, trading_beg_datetime, trading_min_num, opt_type):
+    def do_liquidation(self, trading_beg_datetime, trading_min_num, opt_type, liquidation_size):
         """
         进行平仓操作
         :param trading_beg_datetime: 平仓开始时的交易时间
         :param trading_min_num: 平仓所需的分钟数，整型
         :param opt_type: 期权类型，Call=认购比率，Put=认沽比率
+        :param liquidation_size: 平仓规模，HALF=半仓，ALL=全仓
         :return: 平仓完成时的交易时间，=最后一笔平仓时间的后一分钟
         """
         # 1.取得平值期权、虚值期权的代码
@@ -279,32 +290,43 @@ class CVolTrendTradingStrategy(object):
             atm_code, otm_code = self.call_ratio
         else:
             atm_code, otm_code = self.put_ratio
-        # 2.根据平仓的分钟数，计算每分钟平仓的数量
-        atm_vol = int(self.opt_holdings.holdings[atm_code].holdingvol / trading_min_num + 0.5)
-        otm_vol = int(self.opt_holdings.holdings[otm_code].holdingvol / trading_min_num + 0.5)
-        # 3.在接下来的trading_min_num分钟里平仓，每分钟平仓平值、虚值的数量分别为atm_vol和opt_vol
+        # 2.根据平仓规模，计算平值、虚值期权平仓数量
+        if liquidation_size == 'HALF':
+            atm_liquid_vol = int(self.opt_holdings.holdings[atm_code].holdingvol * 0.5 + 0.5)
+            otm_liquid_vol = int(self.opt_holdings.holdings[otm_code].holdingvol * 0.5 + 0.5)
+        else:
+            atm_liquid_vol = self.opt_holdings.holdings[atm_code].holdingvol
+            otm_liquid_vol = self.opt_holdings.holdings[otm_code].holdingvol
+        # 3.根据平仓的分钟数，计算每分钟平仓的数量
+        atm_vol = int(atm_liquid_vol / trading_min_num + 0.5)
+        otm_vol = int(otm_liquid_vol / trading_min_num + 0.5)
+        # 4.在接下来的trading_min_num分钟里平仓，每分钟平仓平值、虚值的数量分别为atm_vol和opt_vol
+        trade_datas = []
+        is_liquid_done = False
         for min_num in range(trading_min_num):
-            trade_datas = []
             trading_datetime = trading_beg_datetime + datetime.timedelta(minutes=min_num)
             atm_price = self.opts_data[atm_code].quote_1min.ix[trading_datetime, 'close']
             otm_price = self.opts_data[otm_code].quote_1min.ix[trading_datetime, 'close']
             # 如果时间超过14:59:00，将剩余的全部平仓
             if trading_datetime.time() >= datetime.time(14, 59, 0):
-                atm_vol = self.opt_holdings.holdings[atm_code].holdingvol
+                atm_vol = atm_liquid_vol
                 if atm_vol > 0:
                     trade_datas.append(COptTradeData(atm_code, 'sell', 'close', atm_price, atm_vol, atm_price * atm_vol,
                                                      atm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[atm_code]))
-                otm_vol = self.opt_holdings.holdings[otm_code].holdingvol
+                otm_vol = otm_liquid_vol
                 if otm_vol > 0:
                     trade_datas.append(COptTradeData(otm_code, 'buy', 'close', otm_price, otm_vol, otm_price * otm_vol,
                                                      otm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[otm_code]))
+                is_liquid_done = True
             else:
-                if atm_vol > self.opt_holdings.holdings[atm_code].holdingvol:
-                    atm_vol = self.opt_holdings.holdings[atm_code].holdingvol
-                if otm_vol > self.opt_holdings.holdings[otm_code].holdingvol:
-                    otm_vol = self.opt_holdings.holdings[otm_code].holdingvol
+                if (atm_vol > atm_liquid_vol) & (otm_vol > otm_liquid_vol):
+                    is_liquid_done = True
+                if atm_vol > atm_liquid_vol:
+                    atm_vol = atm_liquid_vol
+                if otm_vol > otm_liquid_vol:
+                    otm_vol = otm_liquid_vol
                 if atm_vol > 0:
                     trade_datas.append(COptTradeData(atm_code, 'sell', 'close', atm_price, atm_vol, atm_price * atm_vol,
                                                      atm_vol * self.commission_per_unit, trading_datetime,
@@ -313,7 +335,36 @@ class CVolTrendTradingStrategy(object):
                     trade_datas.append(COptTradeData(otm_code, 'buy', 'close', otm_price, otm_vol, otm_price * otm_vol,
                                                      otm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[otm_code]))
-            # 更新持仓数据
-            self.opt_holdings.update_holdings(trade_datas)
-        # 返回平仓完成时的交易时间，=最后一笔平仓时间的后一分钟
+            atm_liquid_vol -= atm_vol
+            otm_liquid_vol -= otm_vol
+            if is_liquid_done:
+                break
+        # 5.更新持仓数据
+        self.opt_holdings.update_holdings(trade_datas)
+        # 6.返回平仓完成时的交易时间，=最后一笔平仓时间的后一分钟
         return trading_beg_datetime + datetime.timedelta(minutes=trading_min_num)
+
+    def on_vol_trading(self, trading_day, pre_trading_day):
+        """
+        指定某一交易日期，进行基于均线系统的波动率交易
+        :param trading_day: 交易日期，类型=datetime.date
+        :param pre_trading_day: 前一交易日期，类型=datetime.date
+        :return:
+        """
+        # 调用均线系统，计算当天的市场状态
+        mkt_status = mean_average('sh000016', pre_trading_day, self.ma_days, self.ma_deviation)
+        # 导入期权持仓数据
+        self.load_opt_holdings(pre_trading_day)
+        # 根据期权持仓状态和市场状态进行不同操作,NONE=空仓，CALL_RATIO=认购比率，PUT_RATIO=认沽比率，CALL_PUT_RATIO=认购、认沽比率
+        if self.opt_holdings.status == 'NONE':
+            self.load_trading_datas(trading_day)
+            position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30,0)
+            if mkt_status == MktStatus.Bullish:
+                self.do_position(position_datetime, 20, 'Put', self.opt_holdings.nav * 0.8)
+            elif mkt_status == MktStatus.Bearish:
+                self.do_position(position_datetime, 20, 'Call', self.opt_holdings.nav * 0.8)
+            elif mkt_status == MktStatus.Volatile:
+                position_datetime = self.do_position(position_datetime, 20, 'Call', self.opt_holdings.nav * 0.4)
+                self.do_position(position_datetime, 20, 'Put', self.opt_holdings.nav * 0.4)
+        if self.opt_holdings.status == 'CALL_RATIO':
+

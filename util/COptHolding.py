@@ -19,6 +19,7 @@ class COptHolding(object):
         commission: 佣金
         pandl: 盈亏
         capital: 规模
+        nav: 组合净值
         gammaexposure: gamma暴露
         greeks: CGreeks类
         logger: 日志类
@@ -32,6 +33,7 @@ class COptHolding(object):
         self.commission = 0.0
         self.pandl = 0.0
         self.capital = 0.0
+        self.nav = 0.0
         self.gammaexposure = 0.0
         self.greeks = CGreeks()
         # self.logger = None
@@ -77,6 +79,8 @@ class COptHolding(object):
                         self.pandl = float(ind_value)
                     elif ind_name == 'capital':
                         self.capital = float(ind_value)
+                    elif ind_name == 'nav':
+                        self.nav = float(ind_value)
                     elif ind_name == 'gammaexposure':
                         self.gammaexposure = float(ind_value)
                 if bIsHoldingSection:
@@ -111,6 +115,7 @@ class COptHolding(object):
             f.write('commission=%0.2f\n' % self.commission)
             f.write('pandl=%0.2f\n' % self.pandl)
             f.write('capital=%0.2f\n' % self.capital)
+            f.write('nav=%0.2f\n' % self.nav)
             f.write('gammaexposure=%0.2f\n' % self.gammaexposure)
             f.write('gamma_mv=%0.2f\n' % self.greeks.gamma_mv)
             f.write('delta_mv=%0.2f\n' % self.greeks.delta_mv)
@@ -337,20 +342,29 @@ class COptHolding(object):
     def holding_mv(self, trading_datetime):
         """
         计算持仓期权的总市值
-        :param trading_datetime: 计算时间，类型=datetime.datetime
+        :param trading_datetime: 计算时间，类型=datetime.datetime或者datetime.date
         :return:
         """
         opt_mv = 0.0
-        for optcode, optholding in self.holdings.items():
-            opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']
-            opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+        # 如果trading_datetime是datetime.date类型，那么导入持仓期权当天的日行情
+        if isinstance(trading_datetime, datetime.date):
+            str_dailyquote_path = '../../opt_quote/%s/50OptionDailyQuote' % trading_datetime.strftime('%Y-%m-%d')
+            opt_daily_hq = pd.read_csv(str_dailyquote_path,index_col=2,parse_dates=[1])
+            for optcode, optholding in self.holdings.items():
+                opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
+                opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+        elif isinstance(trading_datetime, datetime.datetime):
+            for optcode, optholding in self.holdings.items():
+                opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']
+                opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
         return opt_mv
 
     def p_and_l(self, trading_datetime):
         """
-        计算给定时间点时的盈亏
+        计算给定时间点时的盈亏及组合净值
         :param trading_datetime: 计算时间，类型=datetime.datetime
         :return:
         """
         self.pandl = self.holding_mv(trading_datetime) + self.cashinflow - self.cashoutflow - self.commission
+        self.nav = self.capital + self.pandl
         return self.pandl
