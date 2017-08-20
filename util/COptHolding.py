@@ -301,7 +301,7 @@ class COptHolding(object):
                 self.holdings[tradedata.code] = holding
                 # return True
             else:
-                return
+                return False
         # 如果该交易记录对应期权持仓量=0，那么删除该条期权持仓
         if self.holdings[tradedata.code].holdingvol == 0:
             del_holding = self.holdings.pop(tradedata.code)
@@ -339,10 +339,11 @@ class COptHolding(object):
         if tradedatas:
             self.calc_margin(tradedatas[0].time.date())
 
-    def holding_mv(self, trading_datetime):
+    def holding_mv(self, trading_datetime, holdingside = None):
         """
         计算持仓期权的总市值
         :param trading_datetime: 计算时间，类型=datetime.datetime或者datetime.date
+        :param holdingside: None（计算全部持仓市值）；1（计算多头持仓市值）；-1（计算空头持仓市值）
         :return:
         """
         opt_mv = 0.0
@@ -350,21 +351,50 @@ class COptHolding(object):
         if isinstance(trading_datetime, datetime.date):
             str_dailyquote_path = '../../opt_quote/%s/50OptionDailyQuote' % trading_datetime.strftime('%Y-%m-%d')
             opt_daily_hq = pd.read_csv(str_dailyquote_path,index_col=2,parse_dates=[1])
-            for optcode, optholding in self.holdings.items():
-                opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
-                opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+            if holdingside is None:
+                for optcode, optholding in self.holdings.items():
+                    opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
+                    opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+            else:
+                for optcode, optholding in self.holdings.items():
+                    if optholding.holdingside == holdingside:
+                        opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
+                        opt_mv += holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
         elif isinstance(trading_datetime, datetime.datetime):
-            for optcode, optholding in self.holdings.items():
-                opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']
-                opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+            if holdingside is None:
+                for optcode, optholding in self.holdings.items():
+                    opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']
+                    opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+            else:
+                for optcode, optholding in self.holdings.items():
+                    if optholding.holdingside == holdingside:
+                        opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']
+                        opt_mv += holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
         return opt_mv
 
     def p_and_l(self, trading_datetime):
         """
         计算给定时间点时的盈亏及组合净值
-        :param trading_datetime: 计算时间，类型=datetime.datetime
+        :param trading_datetime: 计算时间，类型=datetime.datetime或者datetime.date
         :return:
         """
         self.pandl = self.holding_mv(trading_datetime) + self.cashinflow - self.cashoutflow - self.commission
-        self.nav = self.capital + self.pandl
+        # self.nav = self.capital + self.pandl
         return self.pandl
+
+    def net_asset_value(self, trading_datetime):
+        """
+        计算持仓净值
+        :param trading_datetime: 计算时间，类型=datetime.datetime或者datetime.date
+        :return:
+        """
+        self.nav = self.capital + self.p_and_l(trading_datetime)
+        return self.nav
+
+    def capital_available(self, trading_datetime):
+        """
+        计算可用资金
+        :param tading_datetime: 计算时间，类型=datetime.datetime或者datetime.date
+        :return: 可用资金，= nav - margin - 多头mv
+        """
+        return self.net_asset_value(trading_datetime) - self.total_margin() - self.holding_mv(trading_datetime, 1)

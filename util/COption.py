@@ -19,7 +19,7 @@ class COption(object):
         exercise_type:行权方式，European, American
         strike:行权价
         multiplier:合约单位
-        end_date:到期日，datetime.datetime类
+        end_date:到期日，datetime.date类
         """
         self.code = code
         self.name = opt_name

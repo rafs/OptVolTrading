@@ -65,6 +65,13 @@ class CVolTrendTradingStrategy(object):
         self.call_ratio = None  # 认购比率空仓时默认为None
         self.put_ratio = None   # 认沽比率空仓时默认为None
 
+        # 交易日历
+        self.calendar = None
+        # 移仓天数
+        self.transform_days = None
+        # 是否移仓
+        self.is_transform = False
+
         # 导入相关参数
         self.load_param()
 
@@ -77,6 +84,8 @@ class CVolTrendTradingStrategy(object):
         self.ma_deviation = cfg.getfloat(self.configname, 'ma_deviation')
         self.spread_ratio = cfg.get(self.configname, 'spread_ratio')
         self.opt_holdings_path = cfg.get('path', 'opt_holdings_path')
+        self.transform_days = cfg.get(self.configname, 'transform_days')
+        self.calendar = pd.read_csv('./data/tradingdays.csv', parse_dates=[0, 1])
 
     def load_opt_basic_data(self, trading_day):
         """
@@ -93,7 +102,8 @@ class CVolTrendTradingStrategy(object):
                                   dtype={'期权代码': str})
         opts_basics.columns = header_name
         opts_basics.set_index(keys='opt_code', inplace=True)
-        opts_basics = opts_basics[(opts_basics.expire_date > trading_day) & (opts_basics.listed_date <= trading_day) &
+        expire_date = self.calendar[self.calendar.tradingday>=trading_day].iloc[self.transform_days-1, 0].date()
+        opts_basics = opts_basics[(opts_basics.expire_date >= expire_date) & (opts_basics.listed_date <= trading_day) &
                                   (opts_basics.multiplier == 10000)]
         if len(opts_basics) == 0:
             return False
@@ -113,8 +123,8 @@ class CVolTrendTradingStrategy(object):
                 self.opts_data[optcode] = COption(optcode, optdata['opt_name'], opt_type, exercise_type,
                                                   float(optdata['strike']), int(optdata['multiplier']), enddate)
         # 如果当前日期为当月合约最后交易日的前一天，那么把持仓状态改为'transform’
-        if opts_basics.iloc[0, 10] - datetime.timedelta(days=1) == trading_day:
-            self.opt_holdings.status = 'transform'
+        # if opts_basics.iloc[0, 10] - datetime.timedelta(days=1) == trading_day:
+        #     self.opt_holdings.status = 'transform'
         return True
 
     def load_opt_holdings(self, trading_day):
@@ -160,6 +170,7 @@ class CVolTrendTradingStrategy(object):
         self.load_opt_basic_data(trading_day)
         self.load_opt_1min_quote(trading_day)
         self.load_underlying_1min_quote(trading_day)
+        self.calc_opt_margin(trading_day)
 
     def calc_opt_margin(self, trading_day):
         """
@@ -290,13 +301,18 @@ class CVolTrendTradingStrategy(object):
             atm_code, otm_code = self.call_ratio
         else:
             atm_code, otm_code = self.put_ratio
-        # 2.根据平仓规模，计算平值、虚值期权平仓数量
+        # 2.根据平仓规模，计算平值、虚值期权平仓数量以及认购或认沽比率价差的代码
         if liquidation_size == 'HALF':
             atm_liquid_vol = int(self.opt_holdings.holdings[atm_code].holdingvol * 0.5 + 0.5)
             otm_liquid_vol = int(self.opt_holdings.holdings[otm_code].holdingvol * 0.5 + 0.5)
         else:
             atm_liquid_vol = self.opt_holdings.holdings[atm_code].holdingvol
             otm_liquid_vol = self.opt_holdings.holdings[otm_code].holdingvol
+            if opt_type == 'Call':
+                self.call_ratio = None
+            else:
+                self.put_ratio = None
+
         # 3.根据平仓的分钟数，计算每分钟平仓的数量
         atm_vol = int(atm_liquid_vol / trading_min_num + 0.5)
         otm_vol = int(otm_liquid_vol / trading_min_num + 0.5)
@@ -356,15 +372,116 @@ class CVolTrendTradingStrategy(object):
         # 导入期权持仓数据
         self.load_opt_holdings(pre_trading_day)
         # 根据期权持仓状态和市场状态进行不同操作,NONE=空仓，CALL_RATIO=认购比率，PUT_RATIO=认沽比率，CALL_PUT_RATIO=认购、认沽比率
+        # 当前持仓状态为“空仓”
         if self.opt_holdings.status == 'NONE':
+            # 如果当前持仓状态为空仓，导入交易相关数据
             self.load_trading_datas(trading_day)
             position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30,0)
+            # 市场状态为牛市，建仓认沽比率价差
             if mkt_status == MktStatus.Bullish:
-                self.do_position(position_datetime, 20, 'Put', self.opt_holdings.nav * 0.8)
+                self.do_position(position_datetime, 20, 'Put', self.opt_holdings.net_asset_value(position_datetime) * 0.8)
+                self.opt_holdings.status = 'PUT_RATIO'
+            # 市场状态为熊市，建仓认购比率价差
             elif mkt_status == MktStatus.Bearish:
-                self.do_position(position_datetime, 20, 'Call', self.opt_holdings.nav * 0.8)
+                self.do_position(position_datetime, 20, 'Call', self.opt_holdings.net_asset_value(position_datetime) * 0.8)
+                self.opt_holdings.status = 'CALL_RATIO'
+            # 市场状态为震荡市，建仓认购、认沽比率价差
             elif mkt_status == MktStatus.Volatile:
-                position_datetime = self.do_position(position_datetime, 20, 'Call', self.opt_holdings.nav * 0.4)
+                position_datetime = self.do_position(position_datetime, 20, 'Call', self.opt_holdings.net_asset_value(position_datetime) * 0.4)
                 self.do_position(position_datetime, 20, 'Put', self.opt_holdings.nav * 0.4)
+                self.opt_holdings.status = 'CALL_PUT_RATIO'
+        # 当前持仓状态为“认购比率”
         if self.opt_holdings.status == 'CALL_RATIO':
+            # 持仓状态为“认购比率”、当前市场状态为“牛市”，平仓全部认购比率家价差、开仓认沽比率价差
+            if mkt_status == MktStatus.Bullish:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
+                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
+                self.do_position(liquidation_datetime, 20, 'Put', self.opt_holdings.net_asset_value(liquidation_datetime) * 0.8)
+                self.opt_holdings.status = 'PUT_RATIO'
+            # 持仓状态为“认购比率”、当前市场状态为“熊市”，不做操作
+            elif mkt_status == MktStatus.Bearish:
+                pass
+            # 持仓状态为“认购比率”、当前市场状态为“震荡市”，平认购比率价差一半仓位、开仓认沽比率差价
+            elif mkt_status == MktStatus.Volatile:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
+                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'HALF')
+                position_capital = self.opt_holdings.capital_available(liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
+                self.do_position(liquidation_datetime, 20, 'Put', position_capital)
+                self.opt_holdings.status = 'CALL_PUT_RATIO'
+        # 当前持仓状态为“认沽比率”
+        if self.opt_holdings.status == 'PUT_RATIO':
+            # 持仓状态为“认沽比率”，当前市场状态为“牛市”，不做操作
+            if mkt_status == MktStatus.Bullish:
+                pass
+            # 持仓状态为“认沽比率”，当前市场状态为“熊市”，平仓全部认沽比率价差、开仓认购比率价差
+            elif mkt_status == MktStatus.Bearish:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
+                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
+                self.do_position(liquidation_datetime, 20, 'Call', self.opt_holdings.net_asset_value(liquidation_datetime) * 0.8)
+                self.opt_holdings.status = 'CALL_RATIO'
+            # 持仓状态为“认沽比率”，当前市场状态为“震荡市“，认沽比率价差平仓一半、开仓认购比率价差
+            elif mkt_status == MktStatus.Volatile:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
+                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'HALF')
+                position_capital = self.opt_holdings.capital_available(liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
+                self.do_position(liquidation_datetime, 20, 'Call', position_capital)
+                self.opt_holdings.status = 'CALL_PUT_RATIO'
+        # 当前持仓状态为“认购认沽比率”
+        if self.opt_holdings.status == 'CALL_PUT_RATIO':
+            # 持仓状态为“认购认沽比率”，当前市场状态为“牛市”，平仓认购比率价差的仓位、开仓认沽比率价差
+            if mkt_status == MktStatus.Bullish:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
+                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
+                position_capital = self.opt_holdings.capital_available(
+                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
+                self.do_position(liquidation_datetime, 20, 'Put', position_capital)
+                self.opt_holdings.status = 'PUT_RATIO'
+            # 持仓状态为“认购认沽比率”，当前市场状态为“熊市”，平仓认沽比率价差的仓位、开仓认购比率
+            elif mkt_status == MktStatus.Bearish:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
+                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
+                position_capital = self.opt_holdings.capital_available(
+                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
+                self.do_position(liquidation_datetime, 20, 'Call', position_capital)
+                self.opt_holdings.status = 'CALL_RATIO'
+            # 持仓状态为“认购认沽比率”，当前市场状态为“震荡市”，不做操作
+            elif mkt_status == MktStatus.Volatile:
+                pass
+        # 如果当天为移仓日期，那么收盘前平仓当前仓位，第二天开盘开新仓
+        if self.call_ratio is not None:
+            expire_date = self.opt_holdings.holdings[self.call_ratio[0]].COption.end_date
+        elif self.put_ratio is not None:
+            expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
+        else:
+            expire_date = None
+        if expire_date is not None:
+            if self.calendar[self.calendar.tradingday <= expire_date].iloc[self.transform_days, 0].date() == trading_day:
+                self.load_trading_datas(trading_day)
+                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 14, 20, 0)
+                if self.call_ratio is not None:
+                    liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
+                if self.put_ratio is not None:
+                    self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+        # 每个交易日结束，保存持仓数据、P&L
+        holding_filename = self.opt_holdings_path + self.configname + '/holding_' + self.portname + '_' + trading_day.strftime('%Y%m%d') + '.txt'
+        self.opt_holdings.save_holdings(holding_filename)
 
+    def on_vol_trading_interval(self, beg_date, end_date):
+        """
+        指定日期区间，进行波动率交易
+        :param beg_date: 开始日期，类型=datetime.date
+        :param end_date: 结束日期，类型=datetime.date
+        :return:
+        """
+        df_tradingdays = self.calendar[(self.calendar.tradingday >= beg_date) & (self.calendar.tradingday <= end_date)]
+        for _, tradingdays in df_tradingdays.iterrows():
+            trading_day = tradingdays['tradingday']
+            pre_trading_day = tradingdays['pre_tradingday']
+            self.on_vol_trading(trading_day, pre_trading_day)
