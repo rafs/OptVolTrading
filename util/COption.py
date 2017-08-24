@@ -65,12 +65,12 @@ class COption(object):
     def load_param(self):
         """从期权基本合约资料.csv文件导入本期权的相应参数"""
         # with open('期权合约基本资料.csv', 'rb', newline='') as f:
-        with open('../data/OptBasics.csv', newline='') as f:
+        with open('./data/OptBasics.csv', newline='') as f:
             f.readline()    # 忽略表头
             opts_params = csv.reader(f, delimiter=',')
             for opt_params in opts_params:
                 if opt_params[0] == self.code:
-                    self.name = opt_params[1]
+                    self.name = opt_params[2]
                     if opt_params[5] == '认购':
                         self.opt_type = 'Call'
                     else:

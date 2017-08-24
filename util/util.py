@@ -16,7 +16,7 @@ class CSingleOptHolding(object):
 
     __slots__ = ['holdingside', 'holdingvol', 'COption']
 
-    def __init__(self, side=0, vol=0, cost = 0, opt=None):
+    def __init__(self, side=0, vol=0, opt=None):
         self.holdingside = side     # 持仓方向，1=long, -1=short
         self.holdingvol = vol       # 持仓量
         self.COption = opt          # 持仓期权，COption类

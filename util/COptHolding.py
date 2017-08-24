@@ -153,11 +153,11 @@ class COptHolding(object):
         :return:
         """
         # 1.读取标的日K线时间序列
-        underlying_quote = pd.read_csv('../data/underlying_daily_quote.csv', index_col=0, parse_dates=[0])
+        underlying_quote = pd.read_csv('./data/underlying_daily_quote.csv', index_col=0, parse_dates=[0])
         underlying_pre_close = float(underlying_quote.ix[trading_day, 'pre_close'])
         # 2.读取样本期权的日行情
         strdate = trading_day.strftime('%Y-%m-%d')
-        strfilepath = '../../opt_quote/' + strdate + '/50OptionDailyQuote.csv'
+        strfilepath = '../opt_quote/' + strdate + '/50OptionDailyQuote.csv'
         opts_quote = pd.read_csv(strfilepath, usecols=range(1, 14), parse_dates=[0], encoding='gb18030', dtype={'option_code':str})
         opts_quote.set_index(keys='option_code', inplace=True)
         # 3.计算持仓期权的开仓保证金
@@ -348,9 +348,11 @@ class COptHolding(object):
         """
         opt_mv = 0.0
         # 如果trading_datetime是datetime.date类型，那么导入持仓期权当天的日行情
-        if isinstance(trading_datetime, datetime.date):
-            str_dailyquote_path = '../../opt_quote/%s/50OptionDailyQuote' % trading_datetime.strftime('%Y-%m-%d')
-            opt_daily_hq = pd.read_csv(str_dailyquote_path,index_col=2,parse_dates=[1])
+        # if isinstance(trading_datetime, datetime.date):
+        if type(trading_datetime).__name__ == 'date':
+            str_dailyquote_path = '../opt_quote/%s/50OptionDailyQuote.csv' % trading_datetime.strftime('%Y-%m-%d')
+            opt_daily_hq = pd.read_csv(str_dailyquote_path, usecols=range(1,14), parse_dates=[0], encoding='gb18030', dtype={'option_code':str})
+            opt_daily_hq.set_index(keys='option_code', inplace=True)
             if holdingside is None:
                 for optcode, optholding in self.holdings.items():
                     opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
@@ -360,7 +362,8 @@ class COptHolding(object):
                     if optholding.holdingside == holdingside:
                         opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
                         opt_mv += holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
-        elif isinstance(trading_datetime, datetime.datetime):
+        # elif isinstance(trading_datetime, datetime.datetime):
+        elif type(trading_datetime).__name__ in ['datetime','Timestamp']:
             if holdingside is None:
                 for optcode, optholding in self.holdings.items():
                     opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']

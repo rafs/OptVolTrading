@@ -29,9 +29,9 @@ def mean_average(index_code, end_date, days, threshold):
     # idx = k_data[k_data.date == end_date].index.values[0]
     fma = k_data[k_data.date <= end_date].tail(days).mean().close
     flast = k_data[k_data.date == end_date].iloc[0].close
-    if flast > fma * (1.0+threshold):
+    if flast > fma * (1.0 + threshold):
         status = MktStatus.Bullish
-    elif flast < fma * (1.0+threshold):
+    elif flast < fma * (1.0 - threshold):
         status = MktStatus.Bearish
     else:
         status = MktStatus.Volatile
@@ -59,9 +59,6 @@ class CVolTrendTradingStrategy(object):
         self.commission_per_unit = 0.0      # 每张期权交易佣金
         self.opt_holdings_path = None       # 持仓数据文件夹路径
 
-        # self.opt_holdings = COptHolding(self.opt_holdings_path + self.configname + 'log.txt')   # 策略的期权持仓类
-        # 策略的期权持仓类
-        self.opt_holdings = COptHolding(os.path.join(self.opt_holdings_path, self.configname, 'log.txt'))
         # 策略的认购比率和认沽比率价差中所含期权代码tuple(code1,code2)，其中第一个为平值期权代码，第二个为虚值期权代码
         self.call_ratio = None  # 认购比率空仓时默认为None
         self.put_ratio = None   # 认沽比率空仓时默认为None
@@ -79,6 +76,9 @@ class CVolTrendTradingStrategy(object):
         # 导入相关参数
         self.load_param()
 
+        # 策略的期权持仓类
+        self.opt_holdings = COptHolding(os.path.join(self.opt_holdings_path, self.configname, 'log.txt'))
+
     def load_param(self):
         """导入策略的参数值"""
         cfg = ConfigParser()
@@ -91,6 +91,7 @@ class CVolTrendTradingStrategy(object):
         self.open_nextmonth_opt_days = cfg.getint(self.configname, 'open_nextmonth_opt_days')
         self.transform_days = cfg.getint(self.configname, 'transform_days')
         self.calendar = pd.read_csv('./data/tradingdays.csv', parse_dates=[0, 1])
+        self.commission_per_unit = cfg.getfloat('trade', 'commission')
 
     def load_opt_basic_data(self, trading_day):
         """
@@ -100,6 +101,7 @@ class CVolTrendTradingStrategy(object):
         :return: 如果导入成功=True，如果导入失败=False
         """
         self.opts_data = {}
+        self.trading_opts_data = {}
         header_name = ['opt_code', 'trade_code', 'opt_name', 'underlying_code', 'secu_type', 'opt_type',
                        'exercise_type', 'strike', 'multiplier', 'end_month', 'listed_date', 'expire_date',
                        'exercise_date', 'delivery_date']
@@ -107,14 +109,16 @@ class CVolTrendTradingStrategy(object):
                                   dtype={'期权代码': str})
         opts_basics.columns = header_name
         opts_basics.set_index(keys='opt_code', inplace=True)
+        opts_basics = opts_basics[(opts_basics.expire_date >= trading_day) & (opts_basics.listed_date <= trading_day) &
+                                  (opts_basics.multiplier == 10000)]
 
         expire_date = self.calendar[self.calendar.tradingday >= trading_day].iloc[self.open_nextmonth_opt_days - 1, 0].date()
         trading_opts_basics = opts_basics[(opts_basics.expire_date >= expire_date) &
-                                          (opts_basics.listed_date <= trading_day) & (opts_basics.multiplier == 10000)]
+                                          (opts_basics.listed_date <= trading_day)]
         if len(trading_opts_basics) == 0:
             return False
         # 选择当月合约，即当前交易合约中到期日最小的合约
-        trading_opts_basics = trading_opts_basics[opts_basics.expire_date == min(opts_basics.expire_date)]
+        trading_opts_basics = trading_opts_basics[trading_opts_basics.expire_date == min(trading_opts_basics.expire_date)]
 
         # 导入未到期期权的基本信息数据
         for optcode, optdata in opts_basics.iterrows():
@@ -283,15 +287,19 @@ class CVolTrendTradingStrategy(object):
                         atm_opt = copt
                     else:
                         if opt_type == 'Call':
-                            if (otm_opt is None) & (copt.strike > atm_strike):
-                                otm_opt = copt
-                            elif (otm_opt is not None) & (atm_strike < copt.strike < otm_opt.strike):
-                                otm_opt = copt
+                            if otm_opt is None:
+                                if copt.strike > atm_strike:
+                                    otm_opt = copt
+                            else:
+                                if atm_strike < copt.strike < otm_opt.strike:
+                                    otm_opt = copt
                         elif opt_type == 'Put':
-                            if (otm_opt is None) & (copt.strike < atm_strike):
-                                otm_opt = copt
-                            elif (otm_opt is not None) & (otm_opt.strike < copt.strike < atm_strike):
-                                otm_opt = copt
+                            if otm_opt is None:
+                                if copt.strike < atm_strike:
+                                    otm_opt = copt
+                            else:
+                                if otm_opt.strike < copt.strike < atm_strike:
+                                    otm_opt = copt
             return atm_opt, otm_opt
 
     def get_spread_ratio(self):
@@ -425,6 +433,9 @@ class CVolTrendTradingStrategy(object):
         :param pre_trading_day: 前一交易日期，类型=datetime.date
         :return:
         """
+        with open(self.opt_holdings_path + self.configname + '/log.txt', 'at') as f:
+            f.write(trading_day.strftime('%Y-%m-%d') + '\n')
+        print("%s of %s" % (trading_day.strftime('%Y-%m-%d'), self.configname))
         self.is_loaded_tradingdata = False
         # 调用均线系统，计算当天的市场状态
         mkt_status = mean_average('sh000016', pre_trading_day, self.ma_days, self.ma_deviation)
@@ -457,7 +468,7 @@ class CVolTrendTradingStrategy(object):
                 if self.do_position(position_datetime, 20, 'Put', position_capital) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
         # 当前持仓状态为“半仓认购比率”
-        if self.opt_holdings.status == 'CALL_HALF_RATIO':
+        elif self.opt_holdings.status == 'CALL_HALF_RATIO':
             # 持仓状态为“半仓认购比率”、当前市场状态为“牛市”，平仓全部认购比率价差、开仓认沽比率价差（全仓）
             if mkt_status == MktStatus.Bullish:
                 self.load_trading_datas(trading_day)
@@ -484,7 +495,7 @@ class CVolTrendTradingStrategy(object):
                 if self.do_position(position_datetime, 20, 'Put', position_capital) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
         # 当前持仓状态为“认购比率”
-        if self.opt_holdings.status == 'CALL_RATIO':
+        elif self.opt_holdings.status == 'CALL_RATIO':
             # 持仓状态为“认购比率”、当前市场状态为“牛市”，平仓全部认购比率价差、开仓认沽比率价差
             if mkt_status == MktStatus.Bullish:
                 self.load_trading_datas(trading_day)
@@ -508,7 +519,7 @@ class CVolTrendTradingStrategy(object):
                 if self.do_position(liquidation_datetime, 20, 'Put', position_capital) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
         # 当前持仓状态为“半仓认沽比率”
-        if self.opt_holdings.status == 'PUT_HALF_RATIO':
+        elif self.opt_holdings.status == 'PUT_HALF_RATIO':
             # 持仓状态为“半仓认沽比率”、当前市场状态为“牛市”，继续开仓认沽比率价差至满仓
             if mkt_status == MktStatus.Bullish:
                 self.load_trading_datas(trading_day)
@@ -535,7 +546,7 @@ class CVolTrendTradingStrategy(object):
                 if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
         # 当前持仓状态为“认沽比率”
-        if self.opt_holdings.status == 'PUT_RATIO':
+        elif self.opt_holdings.status == 'PUT_RATIO':
             # 持仓状态为“认沽比率”，当前市场状态为“牛市”，不做操作
             if mkt_status == MktStatus.Bullish:
                 pass
@@ -559,7 +570,7 @@ class CVolTrendTradingStrategy(object):
                 if self.do_position(liquidation_datetime, 20, 'Call', position_capital) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
         # 当前持仓状态为“认购认沽比率”
-        if self.opt_holdings.status == 'CALL_PUT_RATIO':
+        elif self.opt_holdings.status == 'CALL_PUT_RATIO':
             # 持仓状态为“认购认沽比率”，当前市场状态为“牛市”，平仓认购比率价差的仓位、开仓认沽比率价差
             if mkt_status == MktStatus.Bullish:
                 self.load_trading_datas(trading_day)
@@ -623,7 +634,10 @@ class CVolTrendTradingStrategy(object):
                         self.opt_holdings.status = 'PUT_RATIO'
                     else:
                         self.opt_holdings.status = 'CALL_PUT_RATIO'
-        # 每个交易日结束，保存持仓数据、P&L及策略设置
+        # 每个交易日结束，计算持仓保证金、持仓净值、P&L，并保存持仓数据、P&L及策略设置
+        self.opt_holdings.calc_margin(trading_day)
+        self.opt_holdings.p_and_l(trading_day)
+        self.opt_holdings.net_asset_value(trading_day)
         holding_filename = self.opt_holdings_path + self.configname + '/holding_' + self.portname + '_' + trading_day.strftime('%Y%m%d') + '.txt'
         self.opt_holdings.save_holdings(holding_filename)
         self.save_settings(trading_day)
@@ -637,6 +651,13 @@ class CVolTrendTradingStrategy(object):
         """
         df_tradingdays = self.calendar[(self.calendar.tradingday >= beg_date) & (self.calendar.tradingday <= end_date)]
         for _, tradingdays in df_tradingdays.iterrows():
-            trading_day = tradingdays['tradingday']
-            pre_trading_day = tradingdays['pre_tradingday']
+            trading_day = tradingdays['tradingday'].date()
+            pre_trading_day = tradingdays['pre_tradingday'].date()
             self.on_vol_trading(trading_day, pre_trading_day)
+
+# 结合均线系统的比率价差交易入口
+if __name__ == '__main__':
+    vol_strategy = CVolTrendTradingStrategy('VolTrade', 'vol_trend_strategy')
+    tmbeg_date = datetime.date(2017, 2, 21)
+    tmend_date = datetime.date(2017, 8, 24)
+    vol_strategy.on_vol_trading_interval(tmbeg_date, tmend_date)
