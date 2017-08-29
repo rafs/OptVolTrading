@@ -426,6 +426,115 @@ class CVolTrendTradingStrategy(object):
         # 6.返回平仓完成时的交易时间，=最后一笔平仓时间的后一分钟
         return trading_beg_datetime + datetime.timedelta(minutes=trading_min_num)
 
+    def transfer_status(self, pre_status, status, trading_datetime):
+        """
+        处理转变状态相关的交易
+        :param pre_status: 交易前状态
+        :param status: 交易后状态
+        :param trading_datetime: 交易时间，类型=datetime.datetime
+        :return:
+        """
+        self.load_trading_datas(trading_datetime.day())
+        funderlying_price = self.underlying_quote_1min.ix[trading_datetime, 'close']
+        fnav = self.opt_holdings.net_asset_value(trading_datetime)
+        if pre_status == 'NONE':
+            if status == 'PUT_RATIO':
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'PUT_RATIO'
+            elif status == 'CALL_RATIO':
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'CALL_RATIO'
+            elif status == 'CALL_PUT_RATIO':
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_HALF_RATIO'
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+        elif pre_status == 'CALL_HALF_RATIO':
+            if status == 'PUT_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'PUT_RATIO'
+            elif status == 'CALL_RATIO':
+                atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Call')
+                if self.call_ratio == (atm_opt.code, otm_opt.code):
+                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                        self.opt_holdings.status = 'CALL_RATIO'
+                else:
+                    self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                    self.opt_holdings.status = 'NONE'
+                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                        self.opt_holdings.status = 'CALL_RATIO'
+            elif status == 'CALL_PUT_RATIO':
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+        elif pre_status == 'CALL_RATIO':
+            if status == 'PUT_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'PUT', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'PUT_RATIO'
+            elif status == 'CALL_PUT_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Call', 'HALF')
+                self.opt_holdings.status = 'CALL_HALF_RATIO'
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+        elif pre_status == 'PUT_HALF_RATIO':
+            if status == 'PUT_RATIO':
+                atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Put')
+                if self.put_ratio == (atm_opt.code, otm_opt.code):
+                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                        self.opt_holdings.status = 'PUT_RATIO'
+                else:
+                    self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                    self.opt_holdings.status = 'NONE'
+                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                        self.opt_holdings.status = 'PUT_RATIO'
+            elif status == 'CALL_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'CALL_RATIO'
+            elif status == 'CALL_PUT_RATIO':
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+        elif pre_status == 'PUT_RATIO':
+            if status == 'CALL_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'CALL_RATIO'
+            elif status == 'CALL_PUT_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Put', 'HALF')
+                self.opt_holdings.status = 'PUT_HALF_RATIO'
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+        elif pre_status == 'CALL_PUT_RATIO':
+            if status == 'PUT_RATIO':
+                atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Put')
+                self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'PUT_HALF_RATIO'
+                if self.put_ratio == (atm_opt.code, otm_opt.code):
+                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                        self.opt_holdings.status = 'PUT_RATIO'
+                else:
+                    self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                    self.opt_holdings.status = 'NONE'
+                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                        self.opt_holdings.status = 'PUT_RATIO'
+            elif status == 'CALL_RATIO':
+                atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Call')
+                self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'CALL_HALF_RATIO'
+                if self.call_ratio == (atm_opt.code, otm_opt.code):
+                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                        self.opt_holdings.status = 'CALL_RATIO'
+                else:
+                    self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                    self.opt_holdings.status = 'NONE'
+                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                        self.opt_holdings.status = 'CALL_RATIO'
+
     def on_vol_trading(self, trading_day, pre_trading_day):
         """
         指定某一交易日期，进行基于均线系统的波动率交易
@@ -482,10 +591,19 @@ class CVolTrendTradingStrategy(object):
             elif mkt_status == MktStatus.Bearish:
                 self.load_trading_datas(trading_day)
                 position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                position_capital = self.opt_holdings.capital_available(
-                    position_datetime) - self.opt_holdings.net_asset_value(position_datetime) * 0.2
-                if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_RATIO'
+                funderlying_price = self.underlying_quote_1min.ix[position_datetime, 'close']
+                atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Call')
+                if self.call_ratio == (atm_opt.code, otm_opt.code):
+                    position_capital = self.opt_holdings.capital_available(
+                        position_datetime) - self.opt_holdings.net_asset_value(position_datetime) * 0.2
+                    if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
+                        self.opt_holdings.status = 'CALL_RATIO'
+                else:
+                    tmp_datetime = self.do_liquidation(position_datetime, 20, 'Call', 'ALL')
+                    self.opt_holdings.status = 'NONE'
+                    position_capital = self.opt_holdings.net_asset_value(tmp_datetime) * 0.8
+                    if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
+                        self.opt_holdings.status = 'CALL_RATIO'
             # 持仓状态为“半仓认购比率”、当前市场状态为“震荡市”，开仓认沽比率价差（半仓）
             elif mkt_status == MktStatus.Volatile:
                 self.load_trading_datas(trading_day)
