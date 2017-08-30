@@ -25,9 +25,9 @@ def extract_pandls(pandl_dir, pandl_filename):
     with open(pandl_filename, 'wt') as f:
         for dirname in os.listdir(pandl_dir):
             file_path = os.path.join(pandl_dir, dirname)
-            if os.path.isfile(file_path) and file_path[-4:] == '.txt':
+            if os.path.isfile(file_path) and os.path.basename(file_path)[:7] == 'holding':
                 holding_date, fpandl = extract_pandl(file_path)
                 f.write('%s,%0.2f\n' % (holding_date.strftime('%Y-%m-%d'), fpandl))
 
 if __name__ == '__main__':
-    extract_pandls('../opt_holdings', './pandls.csv')
+    extract_pandls('../opt_holdings/vol_trend_strategy', './pandls.csv')

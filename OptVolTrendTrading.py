@@ -98,7 +98,7 @@ class CVolTrendTradingStrategy(object):
         导入期权基本信息数据
         导入当月期权合约信息，如果trading_day为当月期权合约的最后交易日，那么导入次月合约
         :param trading_day: 日期（类型=datetime.date）
-        :return: 如果导入成功=True，如果导入失败=False
+        :return:
         """
         self.opts_data = {}
         self.trading_opts_data = {}
@@ -115,10 +115,9 @@ class CVolTrendTradingStrategy(object):
         expire_date = self.calendar[self.calendar.tradingday >= trading_day].iloc[self.open_nextmonth_opt_days - 1, 0].date()
         trading_opts_basics = opts_basics[(opts_basics.expire_date >= expire_date) &
                                           (opts_basics.listed_date <= trading_day)]
-        if len(trading_opts_basics) == 0:
-            return False
         # 选择当月合约，即当前交易合约中到期日最小的合约
-        trading_opts_basics = trading_opts_basics[trading_opts_basics.expire_date == min(trading_opts_basics.expire_date)]
+        if len(trading_opts_basics) > 0:
+            trading_opts_basics = trading_opts_basics[trading_opts_basics.expire_date == min(trading_opts_basics.expire_date)]
 
         # 导入未到期期权的基本信息数据
         for optcode, optdata in opts_basics.iterrows():
@@ -141,7 +140,7 @@ class CVolTrendTradingStrategy(object):
         # 如果当前日期为当月合约最后交易日的前一天，那么把持仓状态改为'transform’
         # if opts_basics.iloc[0, 10] - datetime.timedelta(days=1) == trading_day:
         #     self.opt_holdings.status = 'transform'
-        return True
+        # return True
 
     def load_opt_holdings(self, trading_day):
         """
@@ -362,11 +361,13 @@ class CVolTrendTradingStrategy(object):
         :param liquidation_size: 平仓规模，HALF=半仓，ALL=全仓
         :return: 平仓完成时的交易时间，=最后一笔平仓时间的后一分钟
         """
-        # 1.取得平值期权、虚值期权的代码
+        # 1.取得平值期权、虚值期权的代码，以及平值、虚值的期权类实例
         if opt_type == 'Call':
             atm_code, otm_code = self.call_ratio
         else:
             atm_code, otm_code = self.put_ratio
+        atm_opt = COption(atm_code)
+        otm_opt = COption(otm_code)
         # 2.根据平仓规模，计算平值、虚值期权平仓数量以及认购或认沽比率价差的代码
         if liquidation_size == 'HALF':
             atm_liquid_vol = int(self.opt_holdings.holdings[atm_code].holdingvol * 0.5 + 0.5)
@@ -393,12 +394,14 @@ class CVolTrendTradingStrategy(object):
             if trading_datetime.time() >= datetime.time(14, 59, 0):
                 atm_vol = atm_liquid_vol
                 if atm_vol > 0:
-                    trade_datas.append(COptTradeData(atm_code, 'sell', 'close', atm_price, atm_vol, atm_price * atm_vol,
+                    trade_datas.append(COptTradeData(atm_code, 'sell', 'close', atm_price, atm_vol,
+                                                     atm_price * atm_vol * atm_opt.multiplier,
                                                      atm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[atm_code]))
                 otm_vol = otm_liquid_vol
                 if otm_vol > 0:
-                    trade_datas.append(COptTradeData(otm_code, 'buy', 'close', otm_price, otm_vol, otm_price * otm_vol,
+                    trade_datas.append(COptTradeData(otm_code, 'buy', 'close', otm_price, otm_vol,
+                                                     otm_price * otm_vol * otm_opt.multiplier,
                                                      otm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[otm_code]))
                 is_liquid_done = True
@@ -410,11 +413,13 @@ class CVolTrendTradingStrategy(object):
                 if otm_vol > otm_liquid_vol:
                     otm_vol = otm_liquid_vol
                 if atm_vol > 0:
-                    trade_datas.append(COptTradeData(atm_code, 'sell', 'close', atm_price, atm_vol, atm_price * atm_vol,
+                    trade_datas.append(COptTradeData(atm_code, 'sell', 'close', atm_price, atm_vol,
+                                                     atm_price * atm_vol * atm_opt.multiplier,
                                                      atm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[atm_code]))
                 if otm_vol > 0:
-                    trade_datas.append(COptTradeData(otm_code, 'buy', 'close', otm_price, otm_vol, otm_price * otm_vol,
+                    trade_datas.append(COptTradeData(otm_code, 'buy', 'close', otm_price, otm_vol,
+                                                     otm_price * otm_vol * otm_opt.multiplier,
                                                      otm_vol * self.commission_per_unit, trading_datetime,
                                                      self.opts_data[otm_code]))
             atm_liquid_vol -= atm_vol
@@ -434,7 +439,7 @@ class CVolTrendTradingStrategy(object):
         :param trading_datetime: 交易时间，类型=datetime.datetime
         :return:
         """
-        self.load_trading_datas(trading_datetime.day())
+        self.load_trading_datas(trading_datetime.date())
         funderlying_price = self.underlying_quote_1min.ix[trading_datetime, 'close']
         fnav = self.opt_holdings.net_asset_value(trading_datetime)
         if pre_status == 'NONE':
@@ -457,17 +462,23 @@ class CVolTrendTradingStrategy(object):
                     self.opt_holdings.status = 'PUT_RATIO'
             elif status == 'CALL_RATIO':
                 atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Call')
-                if self.call_ratio == (atm_opt.code, otm_opt.code):
-                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
-                        self.opt_holdings.status = 'CALL_RATIO'
-                else:
-                    self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
-                    self.opt_holdings.status = 'NONE'
-                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
-                        self.opt_holdings.status = 'CALL_RATIO'
+                if (atm_opt is not None) and (otm_opt is not None):
+                    if self.call_ratio == (atm_opt.code, otm_opt.code):
+                        if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                            self.opt_holdings.status = 'CALL_RATIO'
+                    else:
+                        self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                        self.opt_holdings.status = 'NONE'
+                        if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                            self.opt_holdings.status = 'CALL_RATIO'
             elif status == 'CALL_PUT_RATIO':
                 if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
+            elif status == 'CALL_HALF_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_HALF_RATIO'
         elif pre_status == 'CALL_RATIO':
             if status == 'PUT_RATIO':
                 self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
@@ -479,17 +490,23 @@ class CVolTrendTradingStrategy(object):
                 self.opt_holdings.status = 'CALL_HALF_RATIO'
                 if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
+            elif status == 'CALL_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'CALL_RATIO'
         elif pre_status == 'PUT_HALF_RATIO':
             if status == 'PUT_RATIO':
                 atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Put')
-                if self.put_ratio == (atm_opt.code, otm_opt.code):
-                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
-                        self.opt_holdings.status = 'PUT_RATIO'
-                else:
-                    self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
-                    self.opt_holdings.status = 'NONE'
-                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
-                        self.opt_holdings.status = 'PUT_RATIO'
+                if (atm_opt is not None) and (otm_opt is not None):
+                    if self.put_ratio == (atm_opt.code, otm_opt.code):
+                        if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                            self.opt_holdings.status = 'PUT_RATIO'
+                    else:
+                        self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                        self.opt_holdings.status = 'NONE'
+                        if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                            self.opt_holdings.status = 'PUT_RATIO'
             elif status == 'CALL_RATIO':
                 self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
                 self.opt_holdings.status = 'NONE'
@@ -498,6 +515,11 @@ class CVolTrendTradingStrategy(object):
             elif status == 'CALL_PUT_RATIO':
                 if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
+            elif status == 'PUT_HALF_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'PUT_HALF_RATIO'
         elif pre_status == 'PUT_RATIO':
             if status == 'CALL_RATIO':
                 self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
@@ -509,31 +531,117 @@ class CVolTrendTradingStrategy(object):
                 self.opt_holdings.status = 'PUT_HALF_RATIO'
                 if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
                     self.opt_holdings.status = 'CALL_PUT_RATIO'
+            elif status == 'PUT_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'PUT_RATIO'
         elif pre_status == 'CALL_PUT_RATIO':
             if status == 'PUT_RATIO':
                 atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Put')
                 self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
                 self.opt_holdings.status = 'PUT_HALF_RATIO'
-                if self.put_ratio == (atm_opt.code, otm_opt.code):
-                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
-                        self.opt_holdings.status = 'PUT_RATIO'
-                else:
-                    self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
-                    self.opt_holdings.status = 'NONE'
-                    if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
-                        self.opt_holdings.status = 'PUT_RATIO'
+                if (atm_opt is not None) and (otm_opt is not None):
+                    if self.put_ratio == (atm_opt.code, otm_opt.code):
+                        if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                            self.opt_holdings.status = 'PUT_RATIO'
+                    else:
+                        self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                        self.opt_holdings.status = 'NONE'
+                        if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
+                            self.opt_holdings.status = 'PUT_RATIO'
             elif status == 'CALL_RATIO':
                 atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Call')
                 self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
                 self.opt_holdings.status = 'CALL_HALF_RATIO'
-                if self.call_ratio == (atm_opt.code, otm_opt.code):
-                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
-                        self.opt_holdings.status = 'CALL_RATIO'
+                if (atm_opt is not None) and (otm_opt is not None):
+                    if self.call_ratio == (atm_opt.code, otm_opt.code):
+                        if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                            self.opt_holdings.status = 'CALL_RATIO'
+                    else:
+                        self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                        self.opt_holdings.status = 'NONE'
+                        if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
+                            self.opt_holdings.status = 'CALL_RATIO'
+            elif status == 'CALL_PUT_RATIO':
+                self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
+                self.do_liquidation(trading_datetime, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_datetime, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_HALF_RATIO'
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+
+    def do_term_transfer(self, trading_day):
+        """
+        处理移仓交易
+        :param trading_day: 交易日期，类型=datetime.date
+        :return:
+        """
+        trading_time = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 14, 30, 0)
+        if self.opt_holdings.status == 'CALL_HALF_RATIO':
+            call_expire_date = self.opt_holdings.holdings[self.call_ratio[0]].COption.end_date
+            if self.calendar[self.calendar.tradingday <= call_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                self.load_trading_datas(trading_day)
+                fnav = self.opt_holdings.net_asset_value(trading_time)
+                self.do_liquidation(trading_time, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_time, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_HALF_RATIO'
+        elif self.opt_holdings.status == 'CALL_RATIO':
+            call_expire_date = self.opt_holdings.holdings[self.call_ratio[0]].COption.end_date
+            if self.calendar[self.calendar.tradingday <= call_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                self.load_trading_datas(trading_day)
+                fnav = self.opt_holdings.net_asset_value(trading_time)
+                self.do_liquidation(trading_time, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_time, 20, 'Call', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'CALL_RATIO'
+        elif self.opt_holdings.status == 'PUT_HALF_RATIO':
+            put_expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
+            if self.calendar[self.calendar.tradingday <= put_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                self.load_trading_datas(trading_day)
+                fnav = self.opt_holdings.net_asset_value(trading_time)
+                self.do_liquidation(trading_time, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_time, 20, 'Put', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'PUT_HALF_RATIO'
+        elif self.opt_holdings.status == 'PUT_RATIO':
+            put_expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
+            if self.calendar[self.calendar.tradingday <= put_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                self.load_trading_datas(trading_day)
+                fnav = self.opt_holdings.net_asset_value(trading_time)
+                self.do_liquidation(trading_time, 20, 'Put', 'ALL')
+                self.opt_holdings.status = 'NONE'
+                if self.do_position(trading_time, 20, 'Put', fnav * 0.8) is not None:
+                    self.opt_holdings.status = 'PUT_RATIO'
+        elif self.opt_holdings.status == 'CALL_PUT_RATIO':
+            call_expire_date = self.opt_holdings.holdings[self.call_ratio[0]].COption.end_date
+            if self.calendar[self.calendar.tradingday <= call_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                self.load_trading_datas(trading_day)
+                fnav = self.opt_holdings.net_asset_value(trading_time)
+                self.do_liquidation(trading_time, 20, 'Call', 'ALL')
+                self.opt_holdings.status = 'PUT_HALF_RATIO'
+                if self.do_position(trading_time, 20, 'Call', fnav * 0.4) is not None:
+                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+                    put_expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
+                    if self.calendar[self.calendar.tradingday <= put_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                        self.do_liquidation(trading_time, 20, 'Put', 'ALL')
+                        self.opt_holdings.status = 'CALL_HALF_RATIO'
+                        if self.do_position(trading_time, 20, 'Put', fnav * 0.4) is not None:
+                            self.opt_holdings.status = 'CALL_PUT_RATIO'
                 else:
-                    self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
-                    self.opt_holdings.status = 'NONE'
-                    if self.do_position(trading_datetime, 20, 'Call', fnav * 0.8) is not None:
-                        self.opt_holdings.status = 'CALL_RATIO'
+                    self.do_term_transfer(trading_day)
+            else:
+                put_expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
+                if self.calendar[self.calendar.tradingday <= put_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
+                    self.load_trading_datas(trading_day)
+                    fnav = self.opt_holdings.net_asset_value(trading_time)
+                    self.do_liquidation(trading_time, 20, 'Put', 'ALL')
+                    self.opt_holdings.status = 'CALL_HALF_RATIO'
+                    if self.do_position(trading_time, 20, 'Put', fnav * 0.4) is not None:
+                        self.opt_holdings.status = 'CALL_PUT_RATIO'
+
 
     def on_vol_trading(self, trading_day, pre_trading_day):
         """
@@ -542,127 +650,62 @@ class CVolTrendTradingStrategy(object):
         :param pre_trading_day: 前一交易日期，类型=datetime.date
         :return:
         """
-        with open(self.opt_holdings_path + self.configname + '/log.txt', 'at') as f:
-            f.write(trading_day.strftime('%Y-%m-%d') + '\n')
-        print("%s of %s" % (trading_day.strftime('%Y-%m-%d'), self.configname))
         self.is_loaded_tradingdata = False
         # 调用均线系统，计算当天的市场状态
         mkt_status = mean_average('sh000016', pre_trading_day, self.ma_days, self.ma_deviation)
+        with open(self.opt_holdings_path + self.configname + '/log.txt', 'at') as f:
+            f.write(trading_day.strftime('%Y-%m-%d') + str(mkt_status) + '\n')
+        print("%s of %s" % (trading_day.strftime('%Y-%m-%d'), self.configname))
         # 导入期权持仓数据
         self.load_opt_holdings(pre_trading_day)
         # 导入策略设置
         self.load_settings(pre_trading_day)
         # 根据期权持仓状态和市场状态进行不同操作,NONE=空仓，CALL_RATIO=认购比率，PUT_RATIO=认沽比率，CALL_PUT_RATIO=认购、认沽比率
+        trading_time = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
         # 当前持仓状态为“空仓”
         if self.opt_holdings.status == 'NONE':
-            self.load_trading_datas(trading_day)
-            position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
             # 市场状态为牛市，建仓认沽比率价差
             if mkt_status == MktStatus.Bullish:
-                position_capital = self.opt_holdings.net_asset_value(position_datetime) * 0.8
-                if self.do_position(position_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'PUT_RATIO'
+                self.transfer_status('NONE', 'PUT_RATIO', trading_time)
             # 市场状态为熊市，建仓认购比率价差
             elif mkt_status == MktStatus.Bearish:
-                position_capital = self.opt_holdings.net_asset_value(position_datetime) * 0.8
-                if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_RATIO'
+                self.transfer_status('NONE', 'CALL_RATIO', trading_time)
             # 市场状态为震荡市，建仓认购、认沽比率价差
             elif mkt_status == MktStatus.Volatile:
-                position_capital = self.opt_holdings.net_asset_value(position_datetime) * 0.4
-                position_datetime = self.do_position(position_datetime, 20, 'Call', position_capital)
-                if position_datetime is not None:
-                    self.opt_holdings.status = 'CALL_HALF_RATIO'
-                # position_capital = self.opt_holdings.net_asset_value(position_datetime) * 0.4
-                if self.do_position(position_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+                self.transfer_status('NONE', 'CALL_PUT_RATIO', trading_time)
         # 当前持仓状态为“半仓认购比率”
         elif self.opt_holdings.status == 'CALL_HALF_RATIO':
             # 持仓状态为“半仓认购比率”、当前市场状态为“牛市”，平仓全部认购比率价差、开仓认沽比率价差（全仓）
             if mkt_status == MktStatus.Bullish:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
-                self.opt_holdings.status = 'NONE'
-                position_capital = self.opt_holdings.net_asset_value(liquidation_datetime) * 0.8
-                if self.do_position(liquidation_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'PUT_RATIO'
+                self.transfer_status('CALL_HALF_RATIO', 'PUT_RATIO', trading_time)
             # 持仓状态为“半仓认购比率”、当前市场状态为“熊市”，继续开仓认购比率价差至满仓
             elif mkt_status == MktStatus.Bearish:
-                self.load_trading_datas(trading_day)
-                position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                funderlying_price = self.underlying_quote_1min.ix[position_datetime, 'close']
-                atm_opt, otm_opt = self.get_ratiospread_opts(funderlying_price, 'Call')
-                if self.call_ratio == (atm_opt.code, otm_opt.code):
-                    position_capital = self.opt_holdings.capital_available(
-                        position_datetime) - self.opt_holdings.net_asset_value(position_datetime) * 0.2
-                    if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
-                        self.opt_holdings.status = 'CALL_RATIO'
-                else:
-                    tmp_datetime = self.do_liquidation(position_datetime, 20, 'Call', 'ALL')
-                    self.opt_holdings.status = 'NONE'
-                    position_capital = self.opt_holdings.net_asset_value(tmp_datetime) * 0.8
-                    if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
-                        self.opt_holdings.status = 'CALL_RATIO'
+                self.transfer_status('CALL_HALF_RATIO', 'CALL_RATIO', trading_time)
             # 持仓状态为“半仓认购比率”、当前市场状态为“震荡市”，开仓认沽比率价差（半仓）
             elif mkt_status == MktStatus.Volatile:
-                self.load_trading_datas(trading_day)
-                position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                position_capital = self.opt_holdings.capital_available(
-                    position_datetime) - self.opt_holdings.net_asset_value(position_datetime) * 0.2
-                if self.do_position(position_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+                self.transfer_status('CALL_HALF_RATIO', 'CALL_PUT_RATIO', trading_time)
         # 当前持仓状态为“认购比率”
         elif self.opt_holdings.status == 'CALL_RATIO':
             # 持仓状态为“认购比率”、当前市场状态为“牛市”，平仓全部认购比率价差、开仓认沽比率价差
             if mkt_status == MktStatus.Bullish:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
-                self.opt_holdings.status = 'NONE'
-                position_capital = self.opt_holdings.net_asset_value(liquidation_datetime) * 0.8
-                if self.do_position(liquidation_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'PUT_RATIO'
+                self.transfer_status('CALL_RATIO', 'PUT_RATIO', trading_time)
             # 持仓状态为“认购比率”、当前市场状态为“熊市”，不做操作
             elif mkt_status == MktStatus.Bearish:
                 pass
             # 持仓状态为“认购比率”、当前市场状态为“震荡市”，平认购比率价差一半仓位、开仓认沽比率差价
             elif mkt_status == MktStatus.Volatile:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'HALF')
-                self.opt_holdings.status = 'CALL_HALF_RATIO'
-                position_capital = self.opt_holdings.capital_available(
-                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
-                if self.do_position(liquidation_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+                self.transfer_status('CALL_RATIO', 'CALL_PUT_RATIO', trading_time)
         # 当前持仓状态为“半仓认沽比率”
         elif self.opt_holdings.status == 'PUT_HALF_RATIO':
             # 持仓状态为“半仓认沽比率”、当前市场状态为“牛市”，继续开仓认沽比率价差至满仓
             if mkt_status == MktStatus.Bullish:
-                self.load_trading_datas(trading_day)
-                position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                position_capital = self.opt_holdings.capital_available(
-                    position_datetime) - self.opt_holdings.net_asset_value(position_datetime) * 0.2
-                if self.do_position(position_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'PUT_RATIO'
+                self.transfer_status('PUT_HALF_RATIO', 'PUT_RATIO', trading_time)
             # 持仓状态为“半仓认沽比率”、当前市场状态为“熊市”，平仓全部认沽比率价差、开仓认购比率价差（全仓）
             if mkt_status == MktStatus.Bearish:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
-                self.opt_holdings.status = 'NONE'
-                position_capital = self.opt_holdings.net_asset_value(liquidation_datetime) * 0.8
-                if self.do_position(liquidation_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_RATIO'
+                self.transfer_status('PUT_HALF_RATIO', 'CALL_RATIO', trading_time)
             # 持仓状态为“半仓认沽比率”、当前市场状态为“震荡市”，开仓认购比率价差（半仓）
             if mkt_status == MktStatus.Volatile:
-                self.load_trading_datas(trading_day)
-                position_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                position_capital = self.opt_holdings.capital_available(
-                    position_datetime) - self.opt_holdings.net_asset_value(position_datetime) * 0.2
-                if self.do_position(position_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+                self.transfer_status('PUT_HALF_RATIO', 'CALL_PUT_RATIO', trading_time)
         # 当前持仓状态为“认沽比率”
         elif self.opt_holdings.status == 'PUT_RATIO':
             # 持仓状态为“认沽比率”，当前市场状态为“牛市”，不做操作
@@ -670,88 +713,42 @@ class CVolTrendTradingStrategy(object):
                 pass
             # 持仓状态为“认沽比率”，当前市场状态为“熊市”，平仓全部认沽比率价差、开仓认购比率价差
             elif mkt_status == MktStatus.Bearish:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
-                self.opt_holdings.status = 'NONE'
-                position_capital = self.opt_holdings.net_asset_value(liquidation_datetime) * 0.8
-                if self.do_position(liquidation_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_RATIO'
+                self.transfer_status('PUT_RATIO', 'CALL_RATIO', trading_time)
             # 持仓状态为“认沽比率”，当前市场状态为“震荡市“，认沽比率价差平仓一半、开仓认购比率价差
             elif mkt_status == MktStatus.Volatile:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'HALF')
-                self.opt_holdings.status = 'PUT_HALF_RATIO'
-                position_capital = self.opt_holdings.capital_available(
-                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
-                if self.do_position(liquidation_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_PUT_RATIO'
+                self.transfer_status('PUT_RATIO', 'CALL_PUT_RATIO', trading_time)
         # 当前持仓状态为“认购认沽比率”
         elif self.opt_holdings.status == 'CALL_PUT_RATIO':
             # 持仓状态为“认购认沽比率”，当前市场状态为“牛市”，平仓认购比率价差的仓位、开仓认沽比率价差
             if mkt_status == MktStatus.Bullish:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
-                self.opt_holdings.status = 'PUT_HALF_RATIO'
-                position_capital = self.opt_holdings.capital_available(
-                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
-                if self.do_position(liquidation_datetime, 20, 'Put', position_capital) is not None:
-                    self.opt_holdings.status = 'PUT_RATIO'
+                self.transfer_status('CALL_PUT_RATIO', 'PUT_RATIO', trading_time)
             # 持仓状态为“认购认沽比率”，当前市场状态为“熊市”，平仓认沽比率价差的仓位、开仓认购比率
             elif mkt_status == MktStatus.Bearish:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 9, 30, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
-                self.opt_holdings.status = 'CALL_HALF_RATIO'
-                position_capital = self.opt_holdings.capital_available(
-                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
-                if self.do_position(liquidation_datetime, 20, 'Call', position_capital) is not None:
-                    self.opt_holdings.status = 'CALL_RATIO'
+                self.transfer_status('CALL_PUT_RATIO', 'CALL_RATIO', trading_time)
             # 持仓状态为“认购认沽比率”，当前市场状态为“震荡市”，不做操作
             elif mkt_status == MktStatus.Volatile:
                 pass
         # 如果当天为移仓日期，那么收盘前移仓
-        if self.call_ratio is not None:
-            callratio_expire_date = self.opt_holdings.holdings[self.call_ratio[0]].COption.end_date
-        else:
-            callratio_expire_date = None
-        if self.put_ratio is not None:
-            putratio_expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
-        else:
-            putratio_expire_date = None
-        if callratio_expire_date is not None:
-            if self.calendar[self.calendar.tradingday <= callratio_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
-                self.load_trading_datas(trading_day)
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 14, 20, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Call', 'ALL')
-                if putratio_expire_date is None:
-                    self.opt_holdings.status = 'NONE'
-                else:
-                    self.opt_holdings.status = 'PUT_HALF_RATIO'
-                position_capital = self.opt_holdings.capital_available(
-                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
-                if self.do_position(liquidation_datetime, 20, 'Call', position_capital) is not None:
-                    if putratio_expire_date is None:
-                        self.opt_holdings.status = 'CALL_RATIO'
-                    else:
-                        self.opt_holdings.status = 'CALL_PUT_RATIO'
-        if putratio_expire_date is not None:
-            if self.calendar[self.calendar.tradingday <= putratio_expire_date].iloc[-self.transform_days, 0].date() == trading_day:
-                liquidation_datetime = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 14, 20, 0)
-                liquidation_datetime = self.do_liquidation(liquidation_datetime, 20, 'Put', 'ALL')
-                if self.call_ratio is None:
-                    self.opt_holdings.status = 'NONE'
-                else:
-                    self.opt_holdings.status = 'CALL_HALF_RATIO'
-                position_capital = self.opt_holdings.capital_available(
-                    liquidation_datetime) - self.opt_holdings.net_asset_value(liquidation_datetime) * 0.2
-                if self.do_position(liquidation_datetime, 20, 'Put', position_capital) is not None:
-                    if self.call_ratio is None:
-                        self.opt_holdings.status = 'PUT_RATIO'
-                    else:
-                        self.opt_holdings.status = 'CALL_PUT_RATIO'
+        self.do_term_transfer(trading_day)
+        # if self.call_ratio is not None:
+        #     call_expire_date = self.opt_holdings.holdings[self.call_ratio[0]].COption.end_date
+        # else:
+        #     call_expire_date = None
+        # if self.put_ratio is not None:
+        #     put_expire_date = self.opt_holdings.holdings[self.put_ratio[0]].COption.end_date
+        # else:
+        #     put_expire_date = None
+        # if (call_expire_date is None) and (put_expire_date is None):
+        #     expire_date = None
+        # elif call_expire_date is None:
+        #     expire_date = put_expire_date
+        # elif put_expire_date is None:
+        #     expire_date = call_expire_date
+        # else:
+        #     expire_date = min(call_expire_date, put_expire_date)
+        # if (expire_date is not None) and (self.calendar[self.calendar.tradingday <= expire_date].iloc[-self.transform_days, 0].date() == trading_day):
+        #     trading_time = datetime.datetime(trading_day.year, trading_day.month, trading_day.day, 14, 30, 0)
+        #     self.transfer_status(self.opt_holdings.status, self.opt_holdings.status, trading_time)
         # 每个交易日结束，计算持仓保证金、持仓净值、P&L，并保存持仓数据、P&L及策略设置
         self.opt_holdings.calc_margin(trading_day)
         self.opt_holdings.p_and_l(trading_day)
@@ -776,6 +773,6 @@ class CVolTrendTradingStrategy(object):
 # 结合均线系统的比率价差交易入口
 if __name__ == '__main__':
     vol_strategy = CVolTrendTradingStrategy('VolTrade', 'vol_trend_strategy')
-    tmbeg_date = datetime.date(2017, 2, 21)
-    tmend_date = datetime.date(2017, 8, 24)
+    tmbeg_date = datetime.date(2015, 2, 9)
+    tmend_date = datetime.date(2017, 8, 15)
     vol_strategy.on_vol_trading_interval(tmbeg_date, tmend_date)

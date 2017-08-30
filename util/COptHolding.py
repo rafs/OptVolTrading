@@ -355,12 +355,12 @@ class COptHolding(object):
             opt_daily_hq.set_index(keys='option_code', inplace=True)
             if holdingside is None:
                 for optcode, optholding in self.holdings.items():
-                    opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
+                    opt_price = opt_daily_hq.ix[optcode, 'close']
                     opt_mv += optholding.holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
             else:
                 for optcode, optholding in self.holdings.items():
                     if optholding.holdingside == holdingside:
-                        opt_price = opt_daily_hq.ix[optcode, 'settlement_price']
+                        opt_price = opt_daily_hq.ix[optcode, 'close']
                         opt_mv += holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
         # elif isinstance(trading_datetime, datetime.datetime):
         elif type(trading_datetime).__name__ in ['datetime','Timestamp']:
