@@ -1,11 +1,12 @@
 from util.util import COptTradeData
 from util.COption import COption
 from util.COptHolding import COptHolding
-from configparser import ConfigParser
+from configparser import ConfigParser, RawConfigParser
 import pandas as pd
 import datetime
 import os
 from enum import Enum, auto
+import time
 
 
 class MktStatus(Enum):
@@ -483,7 +484,7 @@ class CVolTrendTradingStrategy(object):
             if status == 'PUT_RATIO':
                 self.do_liquidation(trading_datetime, 20, 'Call', 'ALL')
                 self.opt_holdings.status = 'NONE'
-                if self.do_position(trading_datetime, 20, 'PUT', fnav * 0.8) is not None:
+                if self.do_position(trading_datetime, 20, 'Put', fnav * 0.8) is not None:
                     self.opt_holdings.status = 'PUT_RATIO'
             elif status == 'CALL_PUT_RATIO':
                 self.do_liquidation(trading_datetime, 20, 'Call', 'HALF')
@@ -773,6 +774,33 @@ class CVolTrendTradingStrategy(object):
 # 结合均线系统的比率价差交易入口
 if __name__ == '__main__':
     vol_strategy = CVolTrendTradingStrategy('VolTrade', 'vol_trend_strategy')
+    print('ma_days = %d, ma_deviation = %0.3f' % (vol_strategy.ma_days, vol_strategy.ma_deviation))
     tmbeg_date = datetime.date(2015, 2, 9)
-    tmend_date = datetime.date(2017, 8, 15)
+    tmend_date = datetime.date(2017, 8, 24)
     vol_strategy.on_vol_trading_interval(tmbeg_date, tmend_date)
+
+    # tmbeg_date = datetime.date(2015, 2, 9)
+    # tmend_date = datetime.date(2017, 8, 24)
+    # config = ConfigParser()
+    # config.read('config.ini')
+    # deviations = ['0.005','0.010','0.015', '0.020', '0.025', '0.030', '0.035', '0.040']
+    # for days in range(60, 61):
+    #     for deviation in deviations:
+    #         # 添加配置项
+    #         section = 'vol_trend_%d_%s' % (days, deviation)
+    #         if config.has_section(section) == False:
+    #             config.add_section(section)
+    #             config.set(section, 'ma_days', str(days))
+    #             config.set(section, 'ma_deviation', deviation)
+    #             config.set(section, 'spread_ratio', '1:3')
+    #             config.set(section, 'transform_days', '5')
+    #             config.set(section, 'open_nextmonth_opt_days', '10')
+    #             config.set(section, 'marginratio', '0.9')
+    #             with open('config.ini', 'w') as f:
+    #                 config.write(f)
+    #         # 执行该配置对应的测试
+    #         vol_strategy = CVolTrendTradingStrategy('VolTrade', section)
+    #         print('\nma_days = %d, ma_deviation = %0.3f' % (vol_strategy.ma_days, vol_strategy.ma_deviation))
+    #         vol_strategy.on_vol_trading_interval(tmbeg_date, tmend_date)
+    #         # 暂停5分钟
+    #         time.sleep(400)
