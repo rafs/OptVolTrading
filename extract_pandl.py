@@ -3,6 +3,7 @@ import datetime
 import pandas as pd
 from pandas import DataFrame
 from util.COptHolding import COptHolding
+import math
 
 
 def extract_pandl(holding_file):
@@ -26,21 +27,31 @@ def extract_pandls(pandl_dir):
     """
     pandl_filename = os.path.join(pandl_dir, 'pandls.csv')
     with open(pandl_filename, 'wt') as f:
-        f.write('date,pandl,nav\n')
+        f.write('date,pandl,nav,daily_ret\n')
+        d = 0
+        fpre_nav = 0.0
         for dirname in os.listdir(pandl_dir):
             file_path = os.path.join(pandl_dir, dirname)
             if os.path.isfile(file_path) and os.path.basename(file_path)[:7] == 'holding':
                 holding_date, fpandl, fnav = extract_pandl(file_path)
-                f.write('%s,%0.2f,%0.2f\n' % (holding_date.strftime('%Y-%m-%d'), fpandl, fnav))
+                if d == 0:
+                    fdaily_ret = 0.0
+                else:
+                    fdaily_ret = math.log(fnav/fpre_nav)
+                fpre_nav = fnav
+                f.write('%s,%0.2f,%0.2f,%0.4f\n' % (holding_date.strftime('%Y-%m-%d'), fpandl, fnav, fdaily_ret))
+                d += 1
 
 if __name__ == '__main__':
     # extract_pandls('../opt_holdings/vol_trend_strategy')
     deviations = ['0.005', '0.010', '0.015', '0.020', '0.025', '0.030', '0.035', '0.040']
     dict_pandls = {}        # pandl字典
     dict_drawdown = {}      # 最大回撤字典
+    dict_sharperatio = {}   # sharpe ratio字典
     for deviation in deviations:
         dict_pandls[deviation] = {}
         dict_drawdown[deviation] = {}
+        dict_sharperatio[deviation] = {}
     for days in range(40, 61):
         for deviation in deviations:
             dir_of_pandl = os.path.join('../opt_holdings', 'vol_trend_%d_%s' % (days, deviation))
@@ -66,9 +77,17 @@ if __name__ == '__main__':
                 if drawdown < max_drawdown:
                     max_drawdown = drawdown
             dict_drawdown[deviation][days] = max_drawdown
+            # 计算sharpe ratio
+            fannualized_ret = math.pow(df_pandl.ix['2017-08-24', 'nav']/1000000.0,
+                                       365.0 / (datetime.date(2017, 8, 24) - datetime.date(2015, 2, 6)).days) - 1.0
+            fret_std = df_pandl['daily_ret'].std() * math.sqrt(250.0)
+            dict_sharperatio[deviation][days] = fannualized_ret / fret_std
     df_pandls = DataFrame(dict_pandls)
     df_drawdown = DataFrame(dict_drawdown)
+    df_sharperatio = DataFrame(dict_sharperatio)
     df_pandls.index.name = 'days'
     df_pandls.to_csv('./pandl_dist.csv')
     df_drawdown.index.name = 'days'
     df_drawdown.to_csv('./maxdrawdown_dist.csv')
+    df_sharperatio.index.name = 'days'
+    df_sharperatio.to_csv('./sharperatio_dist.csv')

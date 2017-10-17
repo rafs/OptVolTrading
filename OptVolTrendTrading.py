@@ -775,8 +775,8 @@ class CVolTrendTradingStrategy(object):
 if __name__ == '__main__':
     vol_strategy = CVolTrendTradingStrategy('VolTrade', 'vol_trend_strategy')
     print('ma_days = %d, ma_deviation = %0.3f' % (vol_strategy.ma_days, vol_strategy.ma_deviation))
-    tmbeg_date = datetime.date(2015, 2, 9)
-    tmend_date = datetime.date(2017, 8, 24)
+    tmbeg_date = datetime.date(2017, 8, 25)
+    tmend_date = datetime.date(2017, 10, 17)
     vol_strategy.on_vol_trading_interval(tmbeg_date, tmend_date)
 
     # tmbeg_date = datetime.date(2015, 2, 9)
