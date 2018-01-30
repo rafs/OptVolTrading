@@ -108,3 +108,5 @@ ENV/
 
 #normal
 *.bak
+
+./vscode
