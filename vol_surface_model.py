@@ -69,14 +69,14 @@ def bs_model(s, k, r, q, sigma, tau, type):
     :param tau: float
         maturity
     :param type: str
-        期权类型, 'C':认购期权; ‘P’:认沽期权
+        期权类型, 'Call':认购期权; ‘Put’:认沽期权
     --------
     :return: float
         期权的理论价格
     """
     d1 = (math.log(s/k) + (r - q + sigma * sigma / 2.0) * tau) / sigma / math.sqrt(tau)
     d2 = d1 - sigma * math.sqrt(tau)
-    if type == 'C':
+    if type == 'Call':
         opt_value = s * math.exp(-q * tau) * norm.cdf(d1) - k * math.exp(-r * tau) * norm.cdf(d2)
     else:
         opt_value = -s * math.exp(-q * tau) * norm.cdf(-d1) + k * math.exp(-r * tau) * norm.cdf(-d2)
@@ -160,7 +160,7 @@ def SABR(alpha, beta, rho, nu, s, k, tau):
         logSK = math.log(s/k)
         A = 1. + ( ((1.-beta)**2*alpha**2)/(24.*(V**2)) + (alpha*beta*nu*rho)/(4.*V) + ((nu**2)*(2.-3.*(rho**2))/24.) ) * tau
         B = 1. + (1./24.)*(((1.-beta)*logSK)**2) + (1./1920.)*(((1-beta)*logSK)**4)
-        VOL = (alpah/V) * A
+        VOL = (alpha/V) * A
     else:   # not-ATM formula
         V = (s * k) ** ((1. - beta)/2.)
         logSK = math.log(s/k)

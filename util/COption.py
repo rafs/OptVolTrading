@@ -119,6 +119,23 @@ class COption(object):
         """
         return self.code == opt.code
 
+    def maturity(self, calc_date_time, unit='days'):
+        """
+        计算期权剩余期限
+        Parameters:
+        --------
+        :param calc_date_time: datetime.datetime
+            计算日期
+        :param unit: str
+            unit='days', 返回剩余期限以'天'为单位；unit='years', 返回剩余期限以'年'为单位
+        :return: float
+            该期权剩余期限，以距离最后交易日的自然日天数为基础计算
+        """
+        tau = (self.end_date - calc_date_time.date()).days + self.time_remain_of_day(calc_date_time)
+        if unit == 'years':
+            tau /= 365.
+        return tau
+
     @classmethod
     def time_remain_of_day(cls, calc_date_time):
         """
