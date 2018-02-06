@@ -11,16 +11,38 @@ import vol_surface_model as vsm
 import pandas as pd
 from pandas import DataFrame, Series
 import datetime
+import logging
+from configparser import ConfigParser
+from pathlib import Path
+
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s')
 
 
 class CVolSurfaceTradingStrategy(object):
     """波动率曲面交易策略"""
-    def __init__(self):
+    def __init__(self, portname, configname):
+        self.parname = portname
+        self.configname = configname
         self.opts_data = {}                 # 当月、次月期权基础数据，字典类型, map<optcode, COption>
         self.monitor_data = DataFrame()     # 监控数据，含最新行情及波动率数据
         self.underlying_price = 0           # underlying的最新价格
         self.risk_free = 0.038              # 无风险利率
         self.q = 0                          # underlying的股息率
+        self.sv_model = None                # 随机波动率模型
+        self.vol_par = []                   # 波动率模型参数
+
+    def load_param(self):
+        """导入策略的参数"""
+        cfg = ConfigParser()
+        cfg.read('config.ini')
+        self.sv_model = cfg.get(self.configname, 'sv_model')
+
+    def load_vol_param(self, trading_day):
+        """导入波动率模型参数"""
+        par = pd.read_csv(Path('./data/%s_par.csv' % self.sv_model), parse_dates=[0], header=0)
+        par = par[par.date <= trading_day].iloc[0]
+        self.vol_par = [par['alpha'], par['beta'], par['rho'], par['nu']]
 
     def load_opt_basic_data(self, trading_day):
         """
@@ -70,7 +92,7 @@ class CVolSurfaceTradingStrategy(object):
                                  'strike': round(copt.strike,3), 'code': copt.code, 'name': copt.name,
                                  'ask_volume': 0, 'ask_price': 0, 'ask_imp_vol': 0, 'mid_imp_vol': 0,
                                  'model_imp_vol': 0, 'model_price': 0, 'bid_volume': 0, 'bid_price': 0,
-                                 'bid_imp_vol': 0})
+                                 'bid_imp_vol': 0, 'long_spread': 0, 'short_spread': 0, 'time_value': 0})
             # single_opt = Series([copt.end_date, copt.strike, copt.code, copt.name, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             #                     index=['expire_date', 'strke', 'code', 'name', 'ask_volume', 'ask_price', 'ask_imp_vol',
             #                            'mid_imp_vol', 'model_imp_vol', 'model_price', 'bid_volume', 'bid_price', 'bid_imp_vol'])
@@ -93,17 +115,63 @@ class CVolSurfaceTradingStrategy(object):
             行情数据类型, 'M'=分钟行情数据, 'R'=实时行情数据
         :return:
         """
-        # 更新行情数据
+        # 更新行情数据及波动率数据
         if quote_type == 'M':
             self.underlying_price = underlying_quote['close']
             for idx, monitor_data in self.monitor_data.iterrows():
                 if monitor_data['code'] in df_opt_quote.index:
                     self.monitor_data.loc[idx, 'ask_price'] = df_opt_quote[monitor_data['code'], 'close']
                     self.monitor_data.loc[idx, 'bid_price'] = df_opt_quote[monitor_data['code'], 'close']
+                    trading_time = df_opt_quote[monitor_data['code'], 'date_time']
+                    mkt_price = (self.monitor_data.loc[idx, 'ask_price'] + self.monitor_data.loc[idx, 'bid_price']) / 2.
+                    tau = self.opts_data[monitor_data['code']].maturity(trading_time, 'years')
                     imp_vol = vsm.opt_imp_vol(self.underlying_price, monitor_data['strike'], self.risk_free, self.q,
-                                              self.opts_data[monitor_data['code']].maturity())
+                                              tau, monitor_data['opt_type'], mkt_price)
+                    self.monitor_data.loc[idx, 'ask_imp_vol'] = imp_vol
+                    self.monitor_data.loc[idx, 'bid_imp_vol'] = imp_vol
+                    self.monitor_data.loc[idx, 'mid_imp_vol'] = imp_vol
+                    if self.sv_model == 'sabr':
+                        self.monitor_data.loc[idx, 'model_imp_vol'] = vsm.SABR(self.vol_par[0], self.vol_par[1], self.vol_par[2], self.vol_par[3],
+                                                                               self.underlying_price, monitor_data['strike'], tau)
+                        self.monitor_data.loc[idx, 'model_price'] = vsm.bs_model(self.underlying_price, monitor_data['strike'], self.risk_free,
+                                                                                 self.q, self.monitor_data.loc[idx, 'model_imp_vol'], tau,
+                                                                                 monitor_data['opt_type'])
+                        self.monitor_data.loc[idx, 'long_spread'] = self.monitor_data.loc[idx, 'ask_price'] - self.monitor_data.loc[idx, 'model_price']
+                        self.monitor_data.loc[idx, 'short_spread'] = self.monitor_data.loc[idx, 'bid_price'] - self.monitor_data.loc[idx, 'model_price']
+                    self.monitor_data.loc[idx, 'time_value'] = self.opts_data[monitor_data['code']].time_value(self.underlying_price, trading_time)
+                else:
+                    logging.info('%s期权的行情没有更新!' % monitor_data['code'])
         elif quote_type == 'R':
             pass
+
+    def load_opt_1min_quote(self, trading_day):
+        """
+        导入指定日期期权的1分钟行情数据
+        Parameters:
+        --------
+        :param trading_day: datetime.date
+            日期
+        :return:
+        """
+        cfg = ConfigParser()
+        cfg.read('config.ini')
+        quote_path = cfg.get('path', 'opt_quote_path')
+        strdate = trading_day.strftime('%Y-%m-%d')
+        for optcode, opt in self.opts_data.items():
+            file_path = Path(quote_path, strdate, '%s.csv' % optcode)
+            opt.quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0])
+
+    def load_underlying_1min_quote(self, trading_day):
+        """
+        导入期权标的1分钟行情数据
+        :param trading_day: datetime.date
+            日期
+        :return:
+        """
+        cfg = ConfigParser()
+        cfg.read('config.ini')
+        quote_path = cfg.get('path', 'opt_quote_path')
+        strdate = trading_day.strftime('%Y-%m-%d')
 
 
 
