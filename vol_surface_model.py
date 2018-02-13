@@ -125,8 +125,8 @@ def opt_imp_vol(s, k, r, q, tau, type, mkt_price):
     """
     # imp_vol = optimize.newton(imp_vol_calc_objfunc, x0=sigma_init, fprime=calc_vega, args=(s, k, r, q, tau, type, mkt_price), tol=0.00001)
     try:
-        imp_vol = optimize.bisect(imp_vol_calc_objfunc, 0.01, 2, args=(s, k, r, q, tau, type, mkt_price))
-    except RuntimeError:
+        imp_vol = optimize.bisect(imp_vol_calc_objfunc, 0.0001, 5., args=(s, k, r, q, tau, type, mkt_price))
+    except ValueError:
         imp_vol = 0.0
     # if imp_vol < 0:
     #     imp_vol = 0.0
@@ -220,17 +220,17 @@ def sabr_calibration(beta, s, K, tau, MKT):
     starting_par = np.array([0.001, 0, 0.001])    # 参数[alpha, rho, nu]的初始值
     bnds = ((0.001, None), (-0.999, 0.999), (0.001, None))
     res = optimize.minimize(sabr_objfunc, starting_par, args=(beta, s, K, tau, MKT), bounds=bnds, method='SLSQP')
-    return (res.x[0], res.x[1], res.x[2])
+    return (round(res.x[0], 6), beta, round(res.x[1], 6), round(res.x[2], 6))
 
 
 if __name__ == '__main__':
     # pass
-    s = 3.113
-    k = 3.1
-    r = 0.035101
+    s = 2.8
+    k = 2.6
+    r = 0.0339
     q = 0.0
-    tau = 29/365
-    type = 'C'
-    mkt_price = 0.0667
+    tau = 0.04657534
+    type = 'Call'
+    mkt_price = 0.2082
     imp_vol = opt_imp_vol(s, k, r, q, tau, type, mkt_price)
     print('imp_vol = ', imp_vol)
