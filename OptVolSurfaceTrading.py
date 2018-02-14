@@ -45,6 +45,7 @@ class CVolSurfaceTradingStrategy(object):
         self.pre_trading_date = None        # 前一交易日日期, datetime.date
         self.commission_per_unit = None     # 每张期权交易佣金, float
         self.pair_holding_days = None       # 策略套利持仓对最大持有交易日天数, int
+        self.margin_ratio = 0.9             # 保证金最高比例
         self.opt_holdings_path = ''         # 持仓数据文件夹路径
         self.calendar = None                # 交易日历
 
@@ -54,7 +55,7 @@ class CVolSurfaceTradingStrategy(object):
         # 策略的期权持仓类
         self.opt_holdings = COptHolding(Path(self.opt_holdings_path, self.configname, 'log.txt'))
 
-    def _calibratio_sv_model(self):
+    def _calibrate_sv_model(self):
         """
         对随机波动率模型参数进行校准
         :return:
@@ -111,7 +112,7 @@ class CVolSurfaceTradingStrategy(object):
         decimals = Series([6, 3, 6, 6], index=['maturity', 'strike', 'mkt_imp_vol', 'model_imp_vol'])
         pd.concat([df_call_imp, df_put_imp], axis=0, ignore_index=True).round(decimals).to_csv(file_path, index=False, columns=['maturity', 'strike', 'opt_type', 'mkt_imp_vol', 'model_imp_vol'])
 
-    def calibration_sv_model(self, start_date, end_date=None):
+    def calibrate_sv_model(self, start_date, end_date=None):
         """
         对随机波动率模型参数进行校准(这是对外提供的接口)
         Parameters:
@@ -160,7 +161,7 @@ class CVolSurfaceTradingStrategy(object):
             # underlying_quote['code'] = '510050'
             self._update_monitor_data(df_opt_quote, underlying_quote, quote_type='M', update_model=False)
             # 校准随机波动率模型参数
-            self._calibratio_sv_model()
+            self._calibrate_sv_model()
 
     def _load_param(self):
         """导入策略的参数"""
@@ -359,7 +360,7 @@ class CVolSurfaceTradingStrategy(object):
             4. 认沽期权longspread升序排列
         """
         # 剔除delta小于0.9和小于0.1的深度s实值/虚值合约
-        df_monitor_data = self.monitor_data[(self.monitor_data.delta < 0.9) & (self.monitor_data.delta > 0.1)]
+        df_monitor_data = self.monitor_data[(abs(self.monitor_data.delta) < 0.9) & (abs(self.monitor_data.delta) > 0.1)]
         # 认购期权shortspread降序排列
         call_shortspread_desc = df_monitor_data.loc['Call', self.trading_opt_expdate].sort_values(by='short_spread', ascending=False)
         # 认购期权longspread升序排列
@@ -388,6 +389,9 @@ class CVolSurfaceTradingStrategy(object):
         for optcode, opt in self.opts_data.items():
             file_path = Path(quote_path, strdate, '%s.csv' % optcode)
             opt.quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0])
+        for optcode, holding in self.opt_holdings.holdings.items():
+            file_path = Path(quote_path, strdate, '%s.csv' % optcode)
+            holding.COption.quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0])
 
     def _load_underlying_1min_quote(self, trading_day):
         """
@@ -463,12 +467,16 @@ class CVolSurfaceTradingStrategy(object):
             single_pair['short_last'] = self.opts_data[trade_data[1].code].quote_1min.loc[trade_data[1].time, 'close']  # 空头期权的现价
             single_pair['short_model_price'] = self.monitor_data[self.monitor_data.code==trade_data[1].code].iloc[0]['model_price'] # 空头期权的理论价格
             # 盈利空间
-            single_pair['profit_spread'] = (single_pair['long_model_price'] - single_pair['long_cost']) * single_pair['long_volume'] + (single_pair['short_cost'] - single_pair['short_model_price']) * single_pair['short_volume']
+            # long_profit_spread = (single_pair['long_model_price'] - single_pair['long_cost']) * single_pair['long_volume'] * self.opts_data[single_pair['long_code']].multiplier
+            # short_profit_spread = (single_pair['short_cost'] - single_pair['short_model_price']) * single_pair['short_volume'] * self.opts_data[single_pair['short_code']].multiplier
+            # single_pair['profit_spread'] = long_profit_spread + short_profit_spread
+            single_pair['profit_spread'] = self._profit_spread(single_pair)
             # 预期年化收益率
             money_ocupied = self.opts_data[single_pair['short_code']].margin*single_pair['short_volume'] + single_pair['long_volume']*single_pair['long_cost']*self.opts_data[single_pair['long_code']].multiplier
             single_pair['expect_return'] = single_pair['profit_spread'] / money_ocupied / (self.pair_holding_days/250.)
             # 已实现盈亏
-            single_pair['realized_profit'] = (single_pair['long_last'] - single_pair['long_cost']) * single_pair['long_volume'] + (single_pair['short_cost'] - single_pair['short_last']) * single_pair['short_volume']
+            # single_pair['realized_profit'] = (single_pair['long_last'] - single_pair['long_cost']) * single_pair['long_volume'] + (single_pair['short_cost'] - single_pair['short_last']) * single_pair['short_volume']
+            single_pair['realized_profit'] = self._realized_profit(single_pair)
             single_pair['profit_ratio'] = single_pair['realized_profit'] / single_pair['profit_spread'] # 实现盈亏占比
             single_pair['holding_days'] = 1                                                             # 持仓天数(按交易日计算)
             self.arb_holding_pairs.append(single_pair, ignore_index=True)
@@ -500,18 +508,20 @@ class CVolSurfaceTradingStrategy(object):
                 if arb_pair['holding_days'] > self.pair_holding_days:
                     self._liquidate_arb_pair(arb_pair)
                     to_be_deleted.append(idx)
-            self.arb_holding_pairs.drop(to_be_deleted, axis=0, inplace=True)
+            if len(to_be_deleted) > 0:
+                self.arb_holding_pairs.drop(to_be_deleted, axis=0, inplace=True)
         elif handle_type == 'save':
             arb_pair_header = ['date_time', 'long_code', 'long_volume', 'long_cost', 'long_last', 'long_model_price',
                                'short_code', 'short_volume', 'short_cost', 'short_last', 'short_model_price',
                                'profit_spread', 'expect_return', 'realized_profit', 'profit_ratio', 'holding_days']
-            holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s' % (self.portname, self.trading_date.strftime('%Y%m%d')))
+            holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.trading_date.strftime('%Y%m%d')))
             self.arb_holding_pairs.to_csv(holding_filename, columns=arb_pair_header, index=False)
         elif handle_type == 'load':
+            self.arb_holding_pairs = DataFrame()
             arb_pair_header = ['date_time', 'long_code', 'long_volume', 'long_cost', 'long_last', 'long_model_price',
                                'short_code', 'short_volume', 'short_cost', 'short_last', 'short_model_price',
                                'profit_spread', 'expect_return', 'realized_profit', 'profit_ratio', 'holding_days']
-            holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s' % (self.portname, self.pre_trading_date.strftime('%Y%m%d')))
+            holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.pre_trading_date.strftime('%Y%m%d')))
             if holding_filename.exists():
                 self.arb_holding_pairs = pd.read_csv(holding_filename, header=0, names=arb_pair_header, parse_dates=[0])
 
@@ -551,8 +561,8 @@ class CVolSurfaceTradingStrategy(object):
         -------
             返回套利持仓对的盈利空间
         """
-        long_profit_spread = (arb_pair['long_model_price'] - arb_pair['long_cost']) * arb_pair['long_volume']
-        short_profit_spread = (arb_pair['short_cost'] - arb_pair['short_model_price']) * arb_pair['short_volume']
+        long_profit_spread = (arb_pair['long_model_price'] - arb_pair['long_cost']) * arb_pair['long_volume'] * self.opts_data[arb_pair['long_code']].multiplier
+        short_profit_spread = (arb_pair['short_cost'] - arb_pair['short_model_price']) * arb_pair['short_volume'] * self.opts_data[arb_pair['short_code']].multiplier
         return long_profit_spread + short_profit_spread
 
     def _realized_profit(self, arb_pair):
@@ -566,8 +576,8 @@ class CVolSurfaceTradingStrategy(object):
         --------
             返回套利持仓对的已实现盈利
         """
-        long_realized_profit = (arb_pair['long_last'] - arb_pair['long_cost']) * arb_pair['long_volume']
-        short_realized_profit = (arb_pair['short_cost'] - arb_pair['short_last']) * arb_pair['short_volume']
+        long_realized_profit = (arb_pair['long_last'] - arb_pair['long_cost']) * arb_pair['long_volume'] * self.opts_data[arb_pair['long_code']].multiplier
+        short_realized_profit = (arb_pair['short_cost'] - arb_pair['short_last']) * arb_pair['short_volume'] * self.opts_data[arb_pair['short_code']].multiplier
         return long_realized_profit + short_realized_profit
 
     def _calc_opt_margin(self):
@@ -597,7 +607,7 @@ class CVolSurfaceTradingStrategy(object):
         # 4.计算持仓期权的开仓保证金
         self.opt_holdings.calc_margin(self.trading_date)
 
-    def _cal_opt_greeks(self):
+    def _calc_opt_greeks(self):
         """
         计算期权基础数据中的希腊字母值
         :return:
@@ -626,6 +636,66 @@ class CVolSurfaceTradingStrategy(object):
             model_imp_vol = 0.
         return model_imp_vol
 
+    def _is_fully_invested(self):
+        """
+        是否达到了满仓
+        :return: bool
+        """
+        if self.opt_holdings.margin_ratio() < self.margin_ratio - 0.01:
+            return False
+        else:
+            return True
+
+    def _handle_trade_chance(self, long_monitor_data, short_monitor_data, date_time, handle_type):
+        """
+        处理交易机会
+        Parameters:
+        --------
+        :param long_monitor_data: pd.Series
+            多头期权的monitor_data
+        :param short_monitor_data: pd.Series
+            空头期权的monitor_data
+        :param date_time: datetime.datetime
+            交易时间
+        :param handle_type: str
+            处理方式, 'trade'=交易, 'save'=仅保存交易机会数据, 不进行交易
+        :return:
+        """
+        long_opt_code = long_monitor_data['code']
+        long_opt_delta = self.opts_data[long_opt_code].greeks.delta
+        long_opt_price = long_monitor_data['ask_price']
+        short_opt_code = short_monitor_data['code']
+        short_opt_delta = self.opts_data[short_opt_code].greeks.delta
+        short_opt_price = short_monitor_data['bid_price']
+        if abs(short_opt_delta) > abs(long_opt_delta):
+            short_opt_volume = 10
+            long_opt_volume = int(short_opt_volume * abs(short_opt_delta) / abs(long_opt_delta) + 0.5)
+        else:
+            long_opt_volume = 10
+            short_opt_volume = int(long_opt_volume * abs(long_opt_delta) / abs(short_opt_delta) + 0.5)
+        money_ocupied = self.opts_data[short_opt_code].margin * short_opt_volume + long_opt_volume * long_opt_price * self.opts_data[long_opt_code].multiplier
+        profit_spread = abs(short_monitor_data['short_spread']) * short_opt_volume * self.opts_data[short_opt_code].multiplier \
+                        + abs(long_monitor_data['long_spread']) * long_opt_volume * self.opts_data[long_opt_code].multiplier
+        expected_return = profit_spread / money_ocupied / (self.pair_holding_days/250.)
+        if handle_type == 'trade':
+            if (not self._is_fully_invested()) and expected_return > 0.15:
+                trade_datas = []
+                trade_datas.append(COptTradeData(long_opt_code, 'buy', 'open', long_opt_price, long_opt_volume,
+                                                 long_opt_volume*long_opt_price, long_opt_volume*self.commission_per_unit,
+                                                 date_time, self.opts_data[long_opt_code]))
+                trade_datas.append(COptTradeData(short_opt_code, 'sell', 'open', short_opt_price, short_opt_volume,
+                                                 short_opt_volume*short_opt_price, 0., date_time, self.opts_data[short_opt_code]))
+                self._handle_arb_holding_pairs('add', trade_datas)
+        elif handle_type == 'save':
+            opt_type = self.opts_data[long_opt_code].opt_type
+            trade_chance = [date_time.strftime('%Y-%m-%d %H:%M:%S'), opt_type, short_opt_code, short_opt_volume, short_opt_price,
+                            short_opt_delta, long_opt_code, long_opt_volume, long_opt_price, long_opt_delta, profit_spread,
+                            money_ocupied, expected_return]
+            # filepath = Path(self.opt_holdings_path, self.configname, 'trade_chance_%s.csv' % self.portname)
+            with open('./data/trade_chance_%s.csv' % self.portname, 'a', newline='') as f:
+                csv_writer = csv.writer(f)
+                csv_writer.writerow(trade_chance)
+
     def on_vol_trading(self, trading_day):
         """
         指定某一交易日期，进行波动率曲面交易
@@ -642,9 +712,15 @@ class CVolSurfaceTradingStrategy(object):
         self._init_monitor_data(trading_day)
         # 遍历标的分钟行情的时间戳, 进行波动率曲面交易
         for date_time, underlying_price in self.underlying_quote_1min.iterrows():
+            logging.info('%s searching trade chance.' % date_time.strftime('%Y-%m-%d %H:%M:%S'))
             self.trading_time = date_time
+            if date_time.time() < datetime.time(9, 30, 0):
+                continue
+            if date_time.time() > datetime.time(15, 0, 0):
+                break
             self.underlying_price = underlying_price['close']
-            self._calc_opt_margin()
+            self._calc_opt_greeks()
+            self.opt_holdings.calc_greeks(self.underlying_price, self.risk_free, self.q, self.hist_vol, date_time)
             # 更新monitor_data
             df_opt_quote = DataFrame()
             for idx, monitor_data in self.monitor_data.iterrows():
@@ -656,30 +732,25 @@ class CVolSurfaceTradingStrategy(object):
             df_opt_quote.index.name = 'date_time'
             df_opt_quote.reset_index(inplace=True)
             df_opt_quote.set_index(keys='code', inplace=True)
-            underlying_quote = self.underlying_quote_1min.loc[date_time]
-            self._update_monitor_data(df_opt_quote, underlying_quote, quote_type='M', update_model=True)
+            # underlying_quote = self.underlying_quote_1min.loc[date_time]
+            self._update_monitor_data(df_opt_quote, underlying_price, quote_type='M', update_model=True)
             # scan策略的arb_holding_pairs, 将符合平仓条件的套利持仓对平仓
             self._handle_arb_holding_pairs('scan')
             # 搜索套利机会, 若有, 建仓
             call_shortspread_desc, call_longspread_asc, put_shortspread_desc, put_longspread_asc = self._sorted_arbitrage_spread()
             # 计算认购期权套利机会
             if call_shortspread_desc.iloc[0]['short_spread'] > 0 and call_longspread_asc.iloc[0]['long_spread'] < 0:
-                short_opt_code = call_shortspread_desc.iloc[0]['code']
-                short_opt_delta = self.opts_data[short_opt_code].greeks.delta
-                short_opt_price = call_shortspread_desc.iloc[0]['bid_price']
-                long_opt_code = call_longspread_asc.loc[0]['code']
-                long_opt_delta = self.opts_data[long_opt_code].greeks.delta
-                long_opt_price = call_longspread_asc.iloc[0]['ask_price']
-                if abs(short_opt_delta) > abs(long_opt_delta):
-                    short_opt_volume = 10
-                    long_opt_volume = short_opt_volume * abs(short_opt_delta) / abs(long_opt_delta)
-                else:
-                    long_opt_volume = 10
-                    short_opt_volume = long_opt_volume * abs(long_opt_delta) / abs(short_opt_delta)
-                money_ocupied = self.opts_data[short_opt_code].margin*short_opt_volume + long_opt_volume*long_opt_price*self.opts_data[long_opt_code].multiplier
-                expect_return = (call_shortspread_desc.iloc[0]['short_spread'] - call_longspread_asc.iloc[0]['long_spread']) / money_ocupied / (self.pair_holding_days/250.)
-                if expect_return > 0.15:
+                self._handle_trade_chance(call_longspread_asc.iloc[0], call_shortspread_desc.iloc[0], date_time, 'save')
+            if put_shortspread_desc.iloc[0]['short_spread'] > 0 and put_longspread_asc.iloc[0]['long_spread'] < 0:
+                self._handle_trade_chance(put_longspread_asc.iloc[0], put_shortspread_desc.iloc[0], date_time, 'save')
+        # 每个交易日结束, 校准随机波动率参数, 保存持仓数据、P&L
+        self._calibrate_sv_model()
 
+        self.opt_holdings.calc_margin(trading_day)
+        self.opt_holdings.p_and_l(trading_day)
+        self.opt_holdings.net_asset_value(trading_day)
+        holding_filename = Path(self.opt_holdings_path, self.configname, 'holding_%s_%s.csv' % (self.portname, self.trading_date.strftime('%y%m%d')))
+        self.opt_holdings.save_holdings(holding_filename)
 
 
 if __name__ == '__main__':
@@ -690,4 +761,5 @@ if __name__ == '__main__':
     # s.update_monitor_data(None, None, 'M')
     # print(s.monitor_data)
     # print(s.monitor_data.index)
-    s.calibration_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
+    # s.calibrate_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
+    s.on_vol_trading(datetime.date(2015, 2, 10))

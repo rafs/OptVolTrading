@@ -258,7 +258,9 @@ class COptHolding(object):
                     self.commission += tradedata.commission
                     # return True
                 else:
-                    return False
+                    self.holdings[tradedata.code].holdingvol -= tradedata.tradevol
+                    self.cashoutflow += tradedata.tradevalue
+                    self.commission += tradedata.commission
             elif tradedata.tradeside == 'buy' and tradedata.openclose == 'close':
                 if self.holdings[tradedata.code].holdingside == -1:
                     self.holdings[tradedata.code].holdingvol -= tradedata.tradevol
@@ -266,7 +268,9 @@ class COptHolding(object):
                     self.commission += tradedata.commission
                     # return True
                 else:
-                    return False
+                    self.holdings[tradedata.code].holdingvol += tradedata.tradevol
+                    self.cashoutflow += tradedata.tradevalue
+                    self.commission += tradedata.commission
             elif tradedata.tradeside == 'sell' and tradedata.openclose == 'open':
                 if self.holdings[tradedata.code].holdingside == -1:
                     self.holdings[tradedata.code].holdingvol += tradedata.tradevol
@@ -274,7 +278,9 @@ class COptHolding(object):
                     self.commission += tradedata.commission
                     # return True
                 else:
-                    return False
+                    self.holdings[tradedata.code].holdingvol -= tradedata.tradevol
+                    self.cashinflow += tradedata.tradevalue
+                    self.commission += tradedata.commission
             elif tradedata.tradeside == 'sell' and tradedata.openclose == 'close':
                 if self.holdings[tradedata.code].holdingside == 1:
                     self.holdings[tradedata.code].holdingvol -= tradedata.tradevol
@@ -282,11 +288,13 @@ class COptHolding(object):
                     self.commission += tradedata.commission
                     # return True
                 else:
-                    return False
+                    self.holdings[tradedata.code].holdingvol += tradedata.tradevol
+                    self.cashinflow += tradedata.tradevalue
+                    self.commission += tradedata.commission
         else:
             if tradedata.openclose == 'close':
-                return False
-            elif tradedata.tradeside == 'buy' and tradedata.openclose == 'open':
+                tradedata.openclose = 'open'
+            if tradedata.tradeside == 'buy' and tradedata.openclose == 'open':
                 # holding = CSingleOptHolding(side=1, vol=tradedata.tradevol, opt=COption(tradedata.code))
                 holding = CSingleOptHolding(side=1, vol=tradedata.tradevol, opt=tradedata.opt)
                 self.cashoutflow += tradedata.tradevalue
@@ -315,6 +323,10 @@ class COptHolding(object):
                 strmsg = "failed to delete holding data of option: %s\n" % tradedata.code
             with open(self.logfilepath, 'at') as f:
                 f.write(strmsg)
+        # 如果该交易记录对应的期权持仓量<0, 修改持仓记录
+        elif self.holdings[tradedata.code].holdingvol < 0:
+            self.holdings[tradedata.code].holdingside *= -1
+            self.holdings[tradedata.code].holdingvol *= -1
         return True
 
     def update_holdings(self, tradedatas):
