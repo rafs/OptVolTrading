@@ -773,4 +773,4 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
-    s.on_vol_trading(datetime.date(2015, 4, 1), datetime.date(2015, 4, 30))
+    s.on_vol_trading(datetime.date(2017, 10, 1), datetime.date(2017, 10, 17))

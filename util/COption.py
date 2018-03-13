@@ -45,6 +45,8 @@ class COption(object):
         calc_datetime:计算greek的时间(datetime.datetime类)，默认为今天
         """
         tau = ((self.end_date - calc_datetime.date()).days + COption.time_remain_of_day(calc_datetime)) / 365.0
+        if tau < 0.0001:
+            return
         d1 = (math.log(underlying_price / self.strike) +
               (risk_free - dividend_rate + vol * vol / 2.0) * tau) / vol / math.sqrt(tau)
         if self.opt_type.lower() == 'call':
