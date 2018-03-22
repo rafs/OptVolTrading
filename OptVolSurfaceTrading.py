@@ -497,18 +497,25 @@ class CVolSurfaceTradingStrategy(object):
                 arb_pair['expect_return'] = arb_pair['profit_spread'] / money_ocupied
                 arb_pair['realized_profit'] = self._realized_profit(arb_pair)
                 arb_pair['profit_ratio'] = arb_pair['realized_profit'] / arb_pair['profit_spread']
-                # 如果已实现盈利占比>80%, 平仓
-                if arb_pair['profit_ratio'] > 0.8:
+                # 如果盈利空间>0, 且已实现盈利占比>80%, 平仓
+                if arb_pair['profit_spread'] > 0 and arb_pair['profit_ratio'] > 0.8:
                     self._liquidate_arb_pair(arb_pair)
                     to_be_deleted.append(idx)
+                    continue
+                # 如果盈利空间<=0, 平仓
+                if arb_pair['profit_spread'] <= 0:
+                    self._liquidate_arb_pair(arb_pair)
+                    to_be_deleted.append(idx)
+                    continue
                 # 如果预期年化收益率小于无风险利率, 平仓
-                if arb_pair['expect_return'] < 0.:
-                    self._liquidate_arb_pair(arb_pair)
-                    to_be_deleted.append(idx)
+                # if arb_pair['expect_return'] < 0.:
+                #     self._liquidate_arb_pair(arb_pair)
+                #     to_be_deleted.append(idx)
                 # 如果持有天数大于self.pair_holding_days, 平仓
                 if arb_pair['holding_days'] > self.pair_holding_days:
                     self._liquidate_arb_pair(arb_pair)
                     to_be_deleted.append(idx)
+                    continue
             if len(to_be_deleted) > 0:
                 self.arb_holding_pairs.drop(to_be_deleted, axis=0, inplace=True)
         elif handle_type == 'save':
@@ -526,6 +533,9 @@ class CVolSurfaceTradingStrategy(object):
             holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.pre_trading_date.strftime('%Y%m%d')))
             if holding_filename.exists():
                 self.arb_holding_pairs = pd.read_csv(holding_filename, header=0, names=arb_pair_header, parse_dates=[0])
+                # 将套利持仓对的‘持仓天数’增加1
+                for _, arb_pair in self.arb_holding_pairs.iterrows():
+                    arb_pair['holding_days'] += 1
 
     def _liquidate_arb_pair(self, arb_pair):
         """
@@ -749,9 +759,9 @@ class CVolSurfaceTradingStrategy(object):
                 call_shortspread_desc, call_longspread_asc, put_shortspread_desc, put_longspread_asc = self._sorted_arbitrage_spread()
                 # 计算认购期权套利机会
                 if call_shortspread_desc.iloc[0]['short_spread'] > 0 and call_longspread_asc.iloc[0]['long_spread'] < 0:
-                    self._handle_trade_chance(call_longspread_asc.iloc[0], call_shortspread_desc.iloc[0], date_time, 'save')
+                    self._handle_trade_chance(call_longspread_asc.iloc[0], call_shortspread_desc.iloc[0], date_time, 'trade')
                 if put_shortspread_desc.iloc[0]['short_spread'] > 0 and put_longspread_asc.iloc[0]['long_spread'] < 0:
-                    self._handle_trade_chance(put_longspread_asc.iloc[0], put_shortspread_desc.iloc[0], date_time, 'save')
+                    self._handle_trade_chance(put_longspread_asc.iloc[0], put_shortspread_desc.iloc[0], date_time, 'trade')
             # 每个交易日结束, 校准随机波动率参数, 保存持仓数据、P&L
             self._calibrate_sv_model()
 
@@ -761,7 +771,67 @@ class CVolSurfaceTradingStrategy(object):
             holding_filename = Path(self.opt_holdings_path, self.configname, 'holding_%s_%s.csv' % (self.portname, self.trading_date.strftime('%Y%m%d')))
             self.opt_holdings.save_holdings(holding_filename)
             self._handle_arb_holding_pairs(handle_type='save')
-            time.sleep(60)
+            time.sleep(120)
+
+    def trade_chance_analyzing(self):
+        """波动率曲面交易机会分析"""
+        # 波动率曲面策略交易机会文件路径
+        trade_chance_filepath = '/Users/davidyujun/Dropbox/OptVolTrading/data/trade_chance_VolSurfaceTrade.csv'
+        # 导入交易机会数据
+        vs_trade_chances = pd.read_csv(trade_chance_filepath, header=0,
+                                       dtype={'short_opt_code': str, 'long_opt_code': str})
+        trading_days = pd.read_csv('/Users/davidyujun/Dropbox/OptVolTrading/data/tradingdays.csv', header=0)
+        pre_trading_day = trading_days.iloc[0]['tradingday']
+        df_tradechance_convergence = DataFrame()
+        t = 0
+        for _, trade_chance in vs_trade_chances.iterrows():
+            t += 1
+            if t % 10000 == 0:
+                print(trade_chance['datetime'][:10], ', ', str(t))
+            trading_day = trade_chance['datetime'][:10]
+            short_opt_code = trade_chance['short_opt_code']
+            short_opt_vol = trade_chance['short_opt_volume']
+            short_opt_cost = trade_chance['short_opt_price']
+            long_opt_code = trade_chance['long_opt_code']
+            long_opt_vol = trade_chance['long_opt_volume']
+            long_opt_cost = trade_chance['long_opt_price']
+            profit_spread = trade_chance['profit_spread']
+            if trading_day != pre_trading_day:
+                holding_days = trading_days[trading_days.tradingday >= trading_day].head(6)
+                pre_trading_day = trading_day
+            ser_tradechance_convergence = Series()
+            k = 0
+            for holding_day in list(holding_days['tradingday']):
+                opt_quote_path = '/Users/davidyujun/Dropbox/opt_quote/%s/50OptionDailyQuote.csv' % holding_day
+                if not Path(opt_quote_path).exists():
+                    ser_tradechance_convergence = Series()
+                    break
+                df_opt_quote = pd.read_csv(opt_quote_path, header=0, dtype={'option_code': str}, encoding='GB2312')
+                df_opt_quote.set_index('option_code', inplace=True)
+                if short_opt_code not in df_opt_quote.index:
+                    print(short_opt_code, ' not at day: ', holding_day)
+                    ser_tradechance_convergence = Series()
+                    break
+                if long_opt_code not in df_opt_quote.index:
+                    print(long_opt_code, ' not at day: ', holding_day)
+                    ser_tradechance_convergence = Series()
+                    break
+                short_opt_close = df_opt_quote.loc[short_opt_code, 'close']
+                long_opt_close = df_opt_quote.loc[long_opt_code, 'close']
+                realized_profit_amount = (short_opt_vol * (short_opt_cost - short_opt_close) + long_opt_vol * (
+                            long_opt_close - long_opt_cost)) * 10000
+                realized_profit_ratio = round(realized_profit_amount / profit_spread, 4)
+                day_label = 'day' + str(k)
+                ser_tradechance_convergence[day_label] = realized_profit_ratio
+                k += 1
+            if len(ser_tradechance_convergence) > 0:
+                ser_tradechance_convergence['datetime'] = trade_chance['datetime']
+                ser_tradechance_convergence['short_opt_code'] = short_opt_code
+                ser_tradechance_convergence['long_opt_code'] = long_opt_code
+                df_tradechance_convergence = df_tradechance_convergence.append(ser_tradechance_convergence,
+                                                                               ignore_index=True)
+        df_tradechance_convergence.to_csv('~/Dropbox/OptVolTrading/data/trade_chance_convergence.csv',
+                                          index=False, columns=['datetime','short_opt_code','long_opt_code','day0','day1','day2','day3','day4','day5'])
 
 
 if __name__ == '__main__':
@@ -773,4 +843,5 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
-    s.on_vol_trading(datetime.date(2017, 10, 1), datetime.date(2017, 10, 17))
+    s.on_vol_trading(datetime.date(2015, 3, 1), datetime.date(2015, 3, 31))
+    # s.trade_chance_analyzing()
