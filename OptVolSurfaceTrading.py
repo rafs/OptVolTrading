@@ -18,6 +18,7 @@ from configparser import ConfigParser
 from pathlib import Path
 import csv
 import time
+import calendar
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s')
@@ -49,6 +50,11 @@ class CVolSurfaceTradingStrategy(object):
         self.margin_ratio = 0.9             # 保证金最高比例
         self.opt_holdings_path = ''         # 持仓数据文件夹路径
         self.calendar = None                # 交易日历
+
+        self.expected_ret_threshold = None  # 套利交易预期收益率阀值(dict{'call','put'})
+
+        self.trade_num_in_1min = 0          # 一分钟内已交易的次数
+        self.max_trade_num_1min = 5         # 一分钟内最大的交易次数
 
         # 导入相关参数
         self._load_param()
@@ -183,6 +189,40 @@ class CVolSurfaceTradingStrategy(object):
         self.vol_par = {'Call': [call_par['alpha'], call_par['beta'], call_par['rho'], call_par['nu']],
                         'Put': [put_par['alpha'], put_par['beta'], put_par['rho'], put_par['nu']]}
 
+    def _load_expected_return_threshold(self, trading_day, days):
+        """
+        取得给定交易日期的几天波动率曲面交易机会预期收益率的中位数
+        :param trading_day: datetime.date
+            交易日期
+        :param days: int
+            天数
+        """
+        # # 计算取得trading_day日期前一个月的开始、结束时间
+        # year = trading_day.year
+        # month = trading_day.month
+        # month -= 1
+        # if month <= 0:
+        #     month = 12
+        #     year -= 1
+        # wday, monthrange = calendar.monthrange(year, month)
+        # start_time = '%s 09:30:00' % datetime.date(year, month, 1).strftime('%Y-%m-%d')
+        # end_time = '%s 15:00:00' % datetime.date(year, month, monthrange).strftime('%Y-%m-%d')
+
+        # 计算取得trading_day前days天数的开始、结束时间
+        tradingdays_range = self.calendar[self.calendar.tradingday < trading_day].tail(days)
+        start_time = '%s 09:30:00' % tradingdays_range.iloc[0].tradingday.strftime('%Y-%m-%d')
+        end_time = '%s 15:00:00' % tradingdays_range.iloc[-1].tradingday.strftime('%Y-%m-%d')
+        # 读取波动率曲面交易机会数据, 计算给定交易日期前days天的预期收益率的中位数
+        trade_chance_path = './data/trade_chance_%s.csv' % self.portname
+        df_trade_chances = pd.read_csv(trade_chance_path, header=0)
+        sample_trade_chances = df_trade_chances[(df_trade_chances.datetime >= start_time) & (df_trade_chances.datetime <= end_time)]
+        call_sample = sample_trade_chances[sample_trade_chances.opt_type == 'Call']
+        put_sample = sample_trade_chances[sample_trade_chances.opt_type == 'Put']
+        call_expected_ret_threshold = call_sample['expected_return'].median()
+        put_expected_ret_threshold = put_sample['expected_return'].median()
+        self.expected_ret_threshold = {'Call': call_expected_ret_threshold, 'Put': put_expected_ret_threshold}
+
+
     def _load_trading_datas(self, trading_day):
         """
         导入交易日交易相关数据，包含期权基本信息数据、期权分钟数据、标的分钟数据及随机波动率模型模型参数
@@ -191,15 +231,16 @@ class CVolSurfaceTradingStrategy(object):
         :return:
         """
         self._load_opt_basic_data(trading_day)
+        self._load_opt_holdings(self.pre_trading_date)
         self._load_underlying_1min_quote(trading_day)
         self._load_opt_1min_quote(trading_day)
         self._load_risk_free(trading_day)
         self._load_hist_vol(trading_day)
         # pre_trading_day = self.calendar[self.calendar.tradingday == trading_day].iloc[0]['pre_tradingday']
-        self._load_opt_holdings(self.pre_trading_date)
         self._load_vol_param(self.pre_trading_date)
         self._handle_arb_holding_pairs('load')
         self._calc_opt_margin()
+        self._load_expected_return_threshold(trading_day, 20)
 
     def _load_opt_basic_data(self, trading_day):
         """
@@ -458,7 +499,7 @@ class CVolSurfaceTradingStrategy(object):
             single_pair = Series()
             single_pair['date_time'] = trade_data[0].time           # 交易时间, datetime.datetime
             single_pair['long_code'] = trade_data[0].code           # 多头期权代码
-            single_pair['long_volume'] = trade_data[1].tradevol     # 多头期权数量
+            single_pair['long_volume'] = trade_data[0].tradevol     # 多头期权数量
             single_pair['long_cost'] = trade_data[0].tradeprice     # 多头期权成本
             single_pair['long_last'] = self.opts_data[trade_data[0].code].quote_1min.loc[trade_data[0].time, 'close']   # 多头期权的现价
             single_pair['long_model_price'] = self.monitor_data[self.monitor_data.code==trade_data[0].code].iloc[0]['model_price']  # 多头期权的理论价格
@@ -480,31 +521,35 @@ class CVolSurfaceTradingStrategy(object):
             single_pair['realized_profit'] = self._realized_profit(single_pair)
             single_pair['profit_ratio'] = single_pair['realized_profit'] / single_pair['profit_spread'] # 实现盈亏占比
             single_pair['holding_days'] = 1                                                             # 持仓天数(按交易日计算)
-            self.arb_holding_pairs.append(single_pair, ignore_index=True)
+            self.arb_holding_pairs = self.arb_holding_pairs.append(single_pair, ignore_index=True)
             # 添加持仓
             self.opt_holdings.update_holdings(trade_data)
+            self.trade_num_in_1min += 1
         elif handle_type == 'scan':
             # trade_datas = []
             # 遍历self.arb_holding_pairs, 更新最新价格、理论价格、盈利空间、已实现盈亏、预期年化收益率及实现盈利占比
             to_be_deleted = []
             for idx, arb_pair in self.arb_holding_pairs.iterrows():
-                arb_pair['long_last'] = self.opts_data[arb_pair['long_code']].quote_1min.loc[self.trading_time, 'close']
-                arb_pair['long_model_price'] = self.monitor_data[self.monitor_data.code==arb_pair['long_code']].iloc[0]['model_price']
-                arb_pair['short_last'] = self.opts_data[arb_pair['short_code']].quote_1min.loc[self.trading_time, 'close']
-                arb_pair['short_model_price'] = self.monitor_data[self.monitor_data.code==arb_pair['short_code']].iloc[0]['model_price']
-                arb_pair['profit_spread'] = self._profit_spread(arb_pair)
+                # 如果一分钟内交易次数达到上限, 跳出循环
+                if self.trade_num_in_1min >= self.max_trade_num_1min:
+                    break
+                self.arb_holding_pairs.loc[idx, 'long_last'] = self.opts_data[arb_pair['long_code']].quote_1min.loc[self.trading_time, 'close']
+                self.arb_holding_pairs.loc[idx, 'long_model_price'] = self.monitor_data[self.monitor_data.code==arb_pair['long_code']].iloc[0]['model_price']
+                self.arb_holding_pairs.loc[idx, 'short_last'] = self.opts_data[arb_pair['short_code']].quote_1min.loc[self.trading_time, 'close']
+                self.arb_holding_pairs.loc[idx, 'short_model_price'] = self.monitor_data[self.monitor_data.code==arb_pair['short_code']].iloc[0]['model_price']
+                self.arb_holding_pairs.loc[idx, 'profit_spread'] = self._profit_spread(self.arb_holding_pairs.loc[idx])
                 money_ocupied = self.opts_data[arb_pair['short_code']].margin*arb_pair['short_volume'] + arb_pair['long_volume']*arb_pair['long_cost']*self.opts_data[arb_pair['long_code']].multiplier
-                arb_pair['expect_return'] = arb_pair['profit_spread'] / money_ocupied
-                arb_pair['realized_profit'] = self._realized_profit(arb_pair)
-                arb_pair['profit_ratio'] = arb_pair['realized_profit'] / arb_pair['profit_spread']
+                self.arb_holding_pairs.loc[idx, 'expect_return'] = self.arb_holding_pairs.loc[idx, 'profit_spread'] / money_ocupied
+                self.arb_holding_pairs.loc[idx, 'realized_profit'] = self._realized_profit(self.arb_holding_pairs.loc[idx])
+                self.arb_holding_pairs.loc[idx, 'profit_ratio'] = self.arb_holding_pairs.loc[idx, 'realized_profit'] / self.arb_holding_pairs.loc[idx, 'profit_spread']
                 # 如果盈利空间>0, 且已实现盈利占比>80%, 平仓
-                if arb_pair['profit_spread'] > 0 and arb_pair['profit_ratio'] > 0.8:
-                    self._liquidate_arb_pair(arb_pair)
+                if self.arb_holding_pairs.loc[idx, 'profit_spread'] > 0 and self.arb_holding_pairs.loc[idx, 'profit_ratio'] > 0.8:
+                    self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
                 # 如果盈利空间<=0, 平仓
-                if arb_pair['profit_spread'] <= 0:
-                    self._liquidate_arb_pair(arb_pair)
+                if self.arb_holding_pairs.loc[idx, 'profit_spread'] <= 0:
+                    self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
                 # 如果预期年化收益率小于无风险利率, 平仓
@@ -513,7 +558,7 @@ class CVolSurfaceTradingStrategy(object):
                 #     to_be_deleted.append(idx)
                 # 如果持有天数大于self.pair_holding_days, 平仓
                 if arb_pair['holding_days'] > self.pair_holding_days:
-                    self._liquidate_arb_pair(arb_pair)
+                    self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
             if len(to_be_deleted) > 0:
@@ -524,7 +569,7 @@ class CVolSurfaceTradingStrategy(object):
                                'profit_spread', 'expect_return', 'realized_profit', 'profit_ratio', 'holding_days']
             holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.trading_date.strftime('%Y%m%d')))
             if len(self.arb_holding_pairs) > 0:
-                self.arb_holding_pairs.to_csv(holding_filename, columns=arb_pair_header, index=False)
+                self.arb_holding_pairs.to_csv(holding_filename, columns=arb_pair_header, index=False, date_format='%Y-%m-%d %H:%M:%S')
         elif handle_type == 'load':
             self.arb_holding_pairs = DataFrame()
             arb_pair_header = ['date_time', 'long_code', 'long_volume', 'long_cost', 'long_last', 'long_model_price',
@@ -532,10 +577,11 @@ class CVolSurfaceTradingStrategy(object):
                                'profit_spread', 'expect_return', 'realized_profit', 'profit_ratio', 'holding_days']
             holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.pre_trading_date.strftime('%Y%m%d')))
             if holding_filename.exists():
-                self.arb_holding_pairs = pd.read_csv(holding_filename, header=0, names=arb_pair_header, parse_dates=[0])
+                self.arb_holding_pairs = pd.read_csv(holding_filename, header=0, names=arb_pair_header, parse_dates=[0], dtype={'long_code': str, 'short_code': str})
                 # 将套利持仓对的‘持仓天数’增加1
-                for _, arb_pair in self.arb_holding_pairs.iterrows():
-                    arb_pair['holding_days'] += 1
+                for idx, arb_pair in self.arb_holding_pairs.iterrows():
+                    # arb_pair['holding_days'] += 1
+                    self.arb_holding_pairs.loc[idx, 'holding_days'] += 1
 
     def _liquidate_arb_pair(self, arb_pair):
         """
@@ -561,6 +607,7 @@ class CVolSurfaceTradingStrategy(object):
         trade_datas.append(COptTradeData(trade_code, 'buy', 'close', trade_price, trade_volume, trade_value,
                                          trade_commission, self.trading_time, self.opts_data[trade_code]))
         self.opt_holdings.update_holdings(trade_datas)
+        self.trade_num_in_1min += 1
 
     def _profit_spread(self, arb_pair):
         """
@@ -648,12 +695,20 @@ class CVolSurfaceTradingStrategy(object):
             model_imp_vol = 0.
         return model_imp_vol
 
-    def _is_fully_invested(self):
+    def _is_fully_invested(self, trading_datetime):
         """
         是否达到了满仓
         :return: bool
         """
-        if self.opt_holdings.margin_ratio() < self.margin_ratio - 0.01:
+        # if self.opt_holdings.margin_ratio() < self.margin_ratio - 0.01:
+        #     return False
+        # else:
+        #     return True
+
+        money_ocupied = self.opt_holdings.total_margin() + self.opt_holdings.holding_mv(trading_datetime, 1)
+        nav = self.opt_holdings.net_asset_value(trading_datetime)
+        ratio = money_ocupied / nav
+        if ratio < self.margin_ratio - 0.01:
             return False
         else:
             return True
@@ -689,17 +744,22 @@ class CVolSurfaceTradingStrategy(object):
         profit_spread = abs(short_monitor_data['short_spread']) * short_opt_volume * self.opts_data[short_opt_code].multiplier \
                         + abs(long_monitor_data['long_spread']) * long_opt_volume * self.opts_data[long_opt_code].multiplier
         expected_return = profit_spread / money_ocupied
+        opt_type = self.opts_data[long_opt_code].opt_type
         if handle_type == 'trade':
-            if (not self._is_fully_invested()) and expected_return > 0.15:
+            if (self.trade_num_in_1min < self.max_trade_num_1min) and (not self._is_fully_invested(date_time)) and (expected_return > self.expected_ret_threshold[opt_type]):
+            # if (not self._is_fully_invested()) and expected_return > 0.01:
                 trade_datas = []
-                trade_datas.append(COptTradeData(long_opt_code, 'buy', 'open', long_opt_price, long_opt_volume,
-                                                 long_opt_volume*long_opt_price, long_opt_volume*self.commission_per_unit,
+                trade_price = long_opt_price + 0.0002   # 滑点设置为2个tick
+                trade_value = trade_price * long_opt_volume * self.opts_data[long_opt_code].multiplier
+                trade_datas.append(COptTradeData(long_opt_code, 'buy', 'open', trade_price, long_opt_volume,
+                                                 trade_value, long_opt_volume*self.commission_per_unit,
                                                  date_time, self.opts_data[long_opt_code]))
-                trade_datas.append(COptTradeData(short_opt_code, 'sell', 'open', short_opt_price, short_opt_volume,
-                                                 short_opt_volume*short_opt_price, 0., date_time, self.opts_data[short_opt_code]))
+                trade_price = short_opt_price - 0.0002
+                trade_value = trade_price * short_opt_volume * self.opts_data[short_opt_code].multiplier
+                trade_datas.append(COptTradeData(short_opt_code, 'sell', 'open', trade_price, short_opt_volume,
+                                                 trade_value, 0., date_time, self.opts_data[short_opt_code]))
                 self._handle_arb_holding_pairs('add', trade_datas)
         elif handle_type == 'save':
-            opt_type = self.opts_data[long_opt_code].opt_type
             trade_chance = [date_time.strftime('%Y-%m-%d %H:%M:%S'), opt_type, short_opt_code, short_opt_volume, round(short_opt_price, 4),
                             round(short_opt_delta, 4), long_opt_code, long_opt_volume, round(long_opt_price, 4), round(long_opt_delta, 4),
                             round(profit_spread, 4), round(money_ocupied, 2), round(expected_return, 4)]
@@ -733,6 +793,7 @@ class CVolSurfaceTradingStrategy(object):
             for date_time, underlying_price in self.underlying_quote_1min.iterrows():
                 logging.info('%s searching trade chance.' % date_time.strftime('%Y-%m-%d %H:%M:%S'))
                 self.trading_time = date_time
+                self.trade_num_in_1min = 0
                 if date_time.time() < datetime.time(9, 30, 0):
                     continue
                 if date_time.time() > datetime.time(15, 0, 0):
@@ -843,5 +904,5 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
-    s.on_vol_trading(datetime.date(2015, 3, 1), datetime.date(2015, 3, 31))
+    s.on_vol_trading(datetime.date(2015, 3, 4), datetime.date(2015, 3, 31))
     # s.trade_chance_analyzing()

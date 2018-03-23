@@ -35,6 +35,7 @@ class COptHolding(object):
         self.capital = 0.0
         self.nav = 0.0
         self.gammaexposure = 0.0
+        self.holdingmv = 0.0
         self.greeks = CGreeks()
         # self.logger = None
         self.logfilepath = str_logfile_path
@@ -120,6 +121,7 @@ class COptHolding(object):
             f.write('gamma_mv=%0.2f\n' % self.greeks.gamma_mv)
             f.write('delta_mv=%0.2f\n' % self.greeks.delta_mv)
             f.write('total_margin=%0.2f\n' % self.total_margin())
+            f.write('holding_mv=%0.2f\n' % self.holdingmv)
             f.write('[end of P&L]\n\n')
 
             f.write('[begin of holdings]\n')
@@ -339,7 +341,7 @@ class COptHolding(object):
         with open(self.logfilepath, 'at') as f:
             for tradedata in tradedatas:
                 log_msg = "trade info: time=%s,code=%s,tradeside=%s,openclose=%s,price=%f,vol=%d,value=%f,commission=%f\n" % \
-                          (tradedata.time.strftime('%H:%M:%S'), tradedata.code, tradedata.tradeside, tradedata.openclose,
+                          (tradedata.time.strftime('%Y-%m-%d %H:%M:%S'), tradedata.code, tradedata.tradeside, tradedata.openclose,
                            tradedata.tradeprice, tradedata.tradevol, tradedata.tradevalue, tradedata.commission)
                 # self.logger.info(log_msg)
                 f.write(log_msg)
@@ -385,6 +387,7 @@ class COptHolding(object):
                     if optholding.holdingside == holdingside:
                         opt_price = optholding.COption.quote_1min.ix[trading_datetime, 'close']
                         opt_mv += holdingside * optholding.holdingvol * opt_price * optholding.COption.multiplier
+        self.holdingmv = opt_mv
         return opt_mv
 
     def p_and_l(self, trading_datetime):

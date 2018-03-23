@@ -38,3 +38,10 @@ class COptTradeData(object):
         self.commission = commission    # 佣金
         self.time = time                # 成交时间(datetime.datetime)
         self.opt = opt                  # 交易的期权(COption类)
+
+
+class Utils(object):
+
+    @classmethod
+    def get_pre_monthrange(cls, calc_date):
+        """取得给定日期前一个月的"""
