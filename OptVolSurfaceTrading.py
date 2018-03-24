@@ -55,6 +55,7 @@ class CVolSurfaceTradingStrategy(object):
 
         self.trade_num_in_1min = 0          # 一分钟内已交易的次数
         self.max_trade_num_1min = 5         # 一分钟内最大的交易次数
+        self.trading_slip_point = 3         # 交易滑点
 
         # 导入相关参数
         self._load_param()
@@ -593,14 +594,14 @@ class CVolSurfaceTradingStrategy(object):
         """
         trade_datas = []
         trade_code = arb_pair['long_code']
-        trade_price = arb_pair['long_last'] + 0.0002  # 滑点为2个tick
+        trade_price = arb_pair['long_last'] - 0.0001 * self.trading_slip_point
         trade_volume = arb_pair['long_volume']
         trade_value = trade_price * trade_volume * self.opts_data[trade_code].multiplier
         trade_commission = trade_volume * self.commission_per_unit
         trade_datas.append(COptTradeData(trade_code, 'sell', 'close', trade_price, trade_volume,
                                          trade_value, trade_commission, self.trading_time, self.opts_data[trade_code]))
         trade_code = arb_pair['short_code']
-        trade_price = arb_pair['short_last'] - 0.0002
+        trade_price = arb_pair['short_last'] + 0.0001 * self.trading_slip_point
         trade_volume = arb_pair['short_volume']
         trade_value = trade_price * trade_volume * self.opts_data[trade_code].multiplier
         trade_commission = trade_volume * self.commission_per_unit
@@ -749,12 +750,12 @@ class CVolSurfaceTradingStrategy(object):
             if (self.trade_num_in_1min < self.max_trade_num_1min) and (not self._is_fully_invested(date_time)) and (expected_return > self.expected_ret_threshold[opt_type]):
             # if (not self._is_fully_invested()) and expected_return > 0.01:
                 trade_datas = []
-                trade_price = long_opt_price + 0.0002   # 滑点设置为2个tick
+                trade_price = long_opt_price + 0.0001 * self.trading_slip_point
                 trade_value = trade_price * long_opt_volume * self.opts_data[long_opt_code].multiplier
                 trade_datas.append(COptTradeData(long_opt_code, 'buy', 'open', trade_price, long_opt_volume,
                                                  trade_value, long_opt_volume*self.commission_per_unit,
                                                  date_time, self.opts_data[long_opt_code]))
-                trade_price = short_opt_price - 0.0002
+                trade_price = short_opt_price - 0.0001 * self.trading_slip_point
                 trade_value = trade_price * short_opt_volume * self.opts_data[short_opt_code].multiplier
                 trade_datas.append(COptTradeData(short_opt_code, 'sell', 'open', trade_price, short_opt_volume,
                                                  trade_value, 0., date_time, self.opts_data[short_opt_code]))
@@ -904,5 +905,5 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
-    s.on_vol_trading(datetime.date(2015, 3, 4), datetime.date(2015, 3, 31))
+    s.on_vol_trading(datetime.date(2015, 4, 28), datetime.date(2015, 4, 30))
     # s.trade_chance_analyzing()
