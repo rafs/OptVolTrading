@@ -403,7 +403,7 @@ class CVolSurfaceTradingStrategy(object):
             4. 认沽期权longspread升序排列
         """
         # 剔除delta小于0.9和小于0.1的深度s实值/虚值合约
-        df_monitor_data = self.monitor_data[(abs(self.monitor_data.delta) < 0.9) & (abs(self.monitor_data.delta) > 0.1)]
+        df_monitor_data = self.monitor_data[(abs(self.monitor_data.delta) < 0.8) & (abs(self.monitor_data.delta) > 0.2)]
         # 认购期权shortspread降序排列
         call_shortspread_desc = df_monitor_data.loc['Call', self.trading_opt_expdate].sort_values(by='short_spread', ascending=False)
         # 认购期权longspread升序排列
@@ -495,10 +495,11 @@ class CVolSurfaceTradingStrategy(object):
         """
         if handle_type == 'add':
             assert len(trade_data) == 2
+            logging.info('建仓.')
             if self.arb_holding_pairs is None:
                 self.arb_holding_pairs = DataFrame()
             single_pair = Series()
-            single_pair['date_time'] = trade_data[0].time           # 交易时间, datetime.datetime
+            single_pair['date_time'] = trade_data[0].time.strftime('%Y-%m-%d %H:%M:%S')     # 交易时间, str
             single_pair['long_code'] = trade_data[0].code           # 多头期权代码
             single_pair['long_volume'] = trade_data[0].tradevol     # 多头期权数量
             single_pair['long_cost'] = trade_data[0].tradeprice     # 多头期权成本
@@ -543,13 +544,15 @@ class CVolSurfaceTradingStrategy(object):
                 self.arb_holding_pairs.loc[idx, 'expect_return'] = self.arb_holding_pairs.loc[idx, 'profit_spread'] / money_ocupied
                 self.arb_holding_pairs.loc[idx, 'realized_profit'] = self._realized_profit(self.arb_holding_pairs.loc[idx])
                 self.arb_holding_pairs.loc[idx, 'profit_ratio'] = self.arb_holding_pairs.loc[idx, 'realized_profit'] / self.arb_holding_pairs.loc[idx, 'profit_spread']
-                # 如果盈利空间>0, 且已实现盈利占比>80%, 平仓
-                if self.arb_holding_pairs.loc[idx, 'profit_spread'] > 0 and self.arb_holding_pairs.loc[idx, 'profit_ratio'] > 0.8:
+                # 如果盈利空间>0, 且已实现盈利占比>50%, 平仓
+                if self.arb_holding_pairs.loc[idx, 'profit_spread'] > 0 and self.arb_holding_pairs.loc[idx, 'profit_ratio'] > 0.5:
+                    logging.info('已实现盈利=%.2f%%>50%%, 平仓.' % (self.arb_holding_pairs.loc[idx, 'profit_ratio'] * 100))
                     self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
                 # 如果盈利空间<=0, 平仓
                 if self.arb_holding_pairs.loc[idx, 'profit_spread'] <= 0:
+                    logging.info('盈利空间<0, 平仓.')
                     self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
@@ -559,6 +562,7 @@ class CVolSurfaceTradingStrategy(object):
                 #     to_be_deleted.append(idx)
                 # 如果持有天数大于self.pair_holding_days, 平仓
                 if arb_pair['holding_days'] > self.pair_holding_days:
+                    logging.info('持有天数>2, 平仓.')
                     self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
@@ -570,7 +574,7 @@ class CVolSurfaceTradingStrategy(object):
                                'profit_spread', 'expect_return', 'realized_profit', 'profit_ratio', 'holding_days']
             holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.trading_date.strftime('%Y%m%d')))
             if len(self.arb_holding_pairs) > 0:
-                self.arb_holding_pairs.to_csv(holding_filename, columns=arb_pair_header, index=False, date_format='%Y-%m-%d %H:%M:%S')
+                self.arb_holding_pairs.to_csv(holding_filename, columns=arb_pair_header, index=False, float_format='%.4f')
         elif handle_type == 'load':
             self.arb_holding_pairs = DataFrame()
             arb_pair_header = ['date_time', 'long_code', 'long_volume', 'long_cost', 'long_last', 'long_model_price',
@@ -904,6 +908,6 @@ if __name__ == '__main__':
     # s.update_monitor_data(None, None, 'M')
     # print(s.monitor_data)
     # print(s.monitor_data.index)
-    # s.calibrate_sv_model(datetime.date(2015, 2, 9), datetime.date(2017, 10, 17))
-    s.on_vol_trading(datetime.date(2015, 4, 28), datetime.date(2015, 4, 30))
+    # s.calibrate_sv_model(datetime.date(2017, 12, 28), datetime.date(2018, 1, 2))
+    s.on_vol_trading(datetime.date(2015, 4, 1), datetime.date(2015, 4, 30))
     # s.trade_chance_analyzing()
