@@ -11,6 +11,7 @@ import vol_surface_model as vsm
 from util.util import COptTradeData
 from util.COptHolding import COptHolding
 import pandas as pd
+import numpy as np
 from pandas import DataFrame, Series
 import datetime
 import logging
@@ -217,11 +218,19 @@ class CVolSurfaceTradingStrategy(object):
         trade_chance_path = './data/trade_chance_%s.csv' % self.portname
         df_trade_chances = pd.read_csv(trade_chance_path, header=0)
         sample_trade_chances = df_trade_chances[(df_trade_chances.datetime >= start_time) & (df_trade_chances.datetime <= end_time)]
+        if len(sample_trade_chances) == 0:
+            logging.info('Trade chances of previous %d days is empty.' % days)
+            return
         call_sample = sample_trade_chances[sample_trade_chances.opt_type == 'Call']
         put_sample = sample_trade_chances[sample_trade_chances.opt_type == 'Put']
         call_expected_ret_threshold = call_sample['expected_return'].median()
+        if call_expected_ret_threshold is np.nan:
+            call_expected_ret_threshold = 0.02
         put_expected_ret_threshold = put_sample['expected_return'].median()
+        if put_expected_ret_threshold is np.nan:
+            put_expected_ret_threshold = 0.02
         self.expected_ret_threshold = {'Call': call_expected_ret_threshold, 'Put': put_expected_ret_threshold}
+        logging.info('Call ret threshold = %.4f, Put ret threshold = %.4f.' % (call_expected_ret_threshold, put_expected_ret_threshold))
 
 
     def _load_trading_datas(self, trading_day):
@@ -241,7 +250,7 @@ class CVolSurfaceTradingStrategy(object):
         self._load_vol_param(self.pre_trading_date)
         self._handle_arb_holding_pairs('load')
         self._calc_opt_margin()
-        self._load_expected_return_threshold(trading_day, 20)
+        self._load_expected_return_threshold(trading_day, 5)
 
     def _load_opt_basic_data(self, trading_day):
         """
@@ -825,8 +834,10 @@ class CVolSurfaceTradingStrategy(object):
                 call_shortspread_desc, call_longspread_asc, put_shortspread_desc, put_longspread_asc = self._sorted_arbitrage_spread()
                 # 计算认购期权套利机会
                 if call_shortspread_desc.iloc[0]['short_spread'] > 0 and call_longspread_asc.iloc[0]['long_spread'] < 0:
+                    self._handle_trade_chance(call_longspread_asc.iloc[0], call_shortspread_desc.iloc[0], date_time, 'save')
                     self._handle_trade_chance(call_longspread_asc.iloc[0], call_shortspread_desc.iloc[0], date_time, 'trade')
                 if put_shortspread_desc.iloc[0]['short_spread'] > 0 and put_longspread_asc.iloc[0]['long_spread'] < 0:
+                    self._handle_trade_chance(put_longspread_asc.iloc[0], put_shortspread_desc.iloc[0], date_time, 'save')
                     self._handle_trade_chance(put_longspread_asc.iloc[0], put_shortspread_desc.iloc[0], date_time, 'trade')
             # 每个交易日结束, 校准随机波动率参数, 保存持仓数据、P&L
             self._calibrate_sv_model()
@@ -837,7 +848,7 @@ class CVolSurfaceTradingStrategy(object):
             holding_filename = Path(self.opt_holdings_path, self.configname, 'holding_%s_%s.csv' % (self.portname, self.trading_date.strftime('%Y%m%d')))
             self.opt_holdings.save_holdings(holding_filename)
             self._handle_arb_holding_pairs(handle_type='save')
-            time.sleep(120)
+            time.sleep(180)
 
     def trade_chance_analyzing(self):
         """波动率曲面交易机会分析"""
@@ -909,5 +920,5 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2017, 12, 28), datetime.date(2018, 1, 2))
-    s.on_vol_trading(datetime.date(2015, 4, 1), datetime.date(2015, 4, 30))
+    s.on_vol_trading(datetime.date(2015, 8, 11), datetime.date(2015, 12, 31))
     # s.trade_chance_analyzing()
