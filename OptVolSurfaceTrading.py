@@ -504,7 +504,6 @@ class CVolSurfaceTradingStrategy(object):
         """
         if handle_type == 'add':
             assert len(trade_data) == 2
-            logging.info('建仓.')
             if self.arb_holding_pairs is None:
                 self.arb_holding_pairs = DataFrame()
             single_pair = Series()
@@ -534,6 +533,7 @@ class CVolSurfaceTradingStrategy(object):
             single_pair['holding_days'] = 1                                                             # 持仓天数(按交易日计算)
             self.arb_holding_pairs = self.arb_holding_pairs.append(single_pair, ignore_index=True)
             # 添加持仓
+            logging.info('建仓, 盈利空间 = %.2f.' % single_pair['profit_spread'])
             self.opt_holdings.update_holdings(trade_data)
             self.trade_num_in_1min += 1
         elif handle_type == 'scan':
@@ -636,7 +636,8 @@ class CVolSurfaceTradingStrategy(object):
         """
         long_profit_spread = (arb_pair['long_model_price'] - arb_pair['long_cost']) * arb_pair['long_volume'] * self.opts_data[arb_pair['long_code']].multiplier
         short_profit_spread = (arb_pair['short_cost'] - arb_pair['short_model_price']) * arb_pair['short_volume'] * self.opts_data[arb_pair['short_code']].multiplier
-        return long_profit_spread + short_profit_spread
+        commission = (2 * arb_pair['long_volume'] + arb_pair['short_volume']) * self.commission_per_unit
+        return long_profit_spread + short_profit_spread - commission
 
     def _realized_profit(self, arb_pair):
         """
@@ -651,7 +652,8 @@ class CVolSurfaceTradingStrategy(object):
         """
         long_realized_profit = (arb_pair['long_last'] - arb_pair['long_cost']) * arb_pair['long_volume'] * self.opts_data[arb_pair['long_code']].multiplier
         short_realized_profit = (arb_pair['short_cost'] - arb_pair['short_last']) * arb_pair['short_volume'] * self.opts_data[arb_pair['short_code']].multiplier
-        return long_realized_profit + short_realized_profit
+        commission = (2 * arb_pair['long_volume'] + arb_pair['short_volume']) * self.commission_per_unit
+        return long_realized_profit + short_realized_profit - commission
 
     def _calc_opt_margin(self):
         """
@@ -755,8 +757,9 @@ class CVolSurfaceTradingStrategy(object):
             long_opt_volume = 10
             short_opt_volume = int(long_opt_volume * abs(long_opt_delta) / abs(short_opt_delta) + 0.5)
         money_ocupied = self.opts_data[short_opt_code].margin * short_opt_volume + long_opt_volume * long_opt_price * self.opts_data[long_opt_code].multiplier
+        commission = (2 * long_opt_volume + short_opt_volume) * self.commission_per_unit
         profit_spread = abs(short_monitor_data['short_spread']) * short_opt_volume * self.opts_data[short_opt_code].multiplier \
-                        + abs(long_monitor_data['long_spread']) * long_opt_volume * self.opts_data[long_opt_code].multiplier
+                        + abs(long_monitor_data['long_spread']) * long_opt_volume * self.opts_data[long_opt_code].multiplier - commission
         expected_return = profit_spread / money_ocupied
         opt_type = self.opts_data[long_opt_code].opt_type
         if handle_type == 'trade':
@@ -920,5 +923,5 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2017, 12, 28), datetime.date(2018, 1, 2))
-    s.on_vol_trading(datetime.date(2015, 8, 11), datetime.date(2015, 12, 31))
+    s.on_vol_trading(datetime.date(2015, 11, 25), datetime.date(2016, 12, 31))
     # s.trade_chance_analyzing()
