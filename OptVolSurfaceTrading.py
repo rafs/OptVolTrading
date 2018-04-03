@@ -10,6 +10,7 @@ from util.COption import COption
 import vol_surface_model as vsm
 from util.util import COptTradeData
 from util.COptHolding import COptHolding
+from util.util import Utils
 import pandas as pd
 import numpy as np
 from pandas import DataFrame, Series
@@ -97,7 +98,7 @@ class CVolSurfaceTradingStrategy(object):
         put_sv_par.insert(0, self.trading_date.strftime('%Y-%m-%d'))
         put_sv_par.insert(1, 'Put')
         # 保存波动率模型参数
-        with open('./data/%s_par.csv' % self.sv_model, 'a', newline='') as f:
+        with open('./data/%s_par.csv' % self.sv_model, 'a', newline='', encoding='UTF-8') as f:
             csv_writer = csv.writer(f)
             csv_writer.writerows([call_sv_par, put_sv_par])
         # 计算期权理论波动率，并保存
@@ -180,11 +181,11 @@ class CVolSurfaceTradingStrategy(object):
         self.opt_holdings_path = cfg.get('path', 'opt_holdings_path')
         self.commission_per_unit = cfg.getfloat('trade', 'commission')
         self.pair_holding_days = cfg.getint('vol_surface_strategy', 'pair_holding_days')
-        self.calendar = pd.read_csv('./data/tradingdays.csv', parse_dates=[0,1])
+        self.calendar = pd.read_csv('./data/tradingdays.csv', parse_dates=[0,1], encoding='UTF-8')
 
     def _load_vol_param(self, trading_day):
         """导入波动率模型参数"""
-        par = pd.read_csv(Path('./data/%s_par.csv' % self.sv_model), parse_dates=[0], header=0)
+        par = pd.read_csv(Path('./data/%s_par.csv' % self.sv_model), parse_dates=[0], header=0, encoding='UTF-8')
         par = par[par.date == trading_day]
         call_par = par[par.type == 'Call'].iloc[0]
         put_par = par[par.type == 'Put'].iloc[0]
@@ -216,19 +217,25 @@ class CVolSurfaceTradingStrategy(object):
         end_time = '%s 15:00:00' % tradingdays_range.iloc[-1].tradingday.strftime('%Y-%m-%d')
         # 读取波动率曲面交易机会数据, 计算给定交易日期前days天的预期收益率的中位数
         trade_chance_path = './data/trade_chance_%s.csv' % self.portname
-        df_trade_chances = pd.read_csv(trade_chance_path, header=0)
+        df_trade_chances = pd.read_csv(trade_chance_path, header=0, encoding='UTF-8')
         sample_trade_chances = df_trade_chances[(df_trade_chances.datetime >= start_time) & (df_trade_chances.datetime <= end_time)]
         if len(sample_trade_chances) == 0:
             logging.info('Trade chances of previous %d days is empty.' % days)
             return
         call_sample = sample_trade_chances[sample_trade_chances.opt_type == 'Call']
         put_sample = sample_trade_chances[sample_trade_chances.opt_type == 'Put']
-        call_expected_ret_threshold = call_sample['expected_return'].median()
+        call_expected_ret_threshold = np.percentile(Utils.clean_extreme_value(np.array(call_sample['expected_return']), 'MAD'), 75)
+        # call_expected_ret_threshold = call_sample['expected_return'].quantile(0.75)
         if call_expected_ret_threshold is np.nan:
-            call_expected_ret_threshold = 0.02
-        put_expected_ret_threshold = put_sample['expected_return'].median()
+            call_expected_ret_threshold = 0.04
+        if call_expected_ret_threshold < 0.04:
+            call_expected_ret_threshold = 0.04
+        put_expected_ret_threshold = np.percentile(Utils.clean_extreme_value(np.array(put_sample['expected_return']), 'MAD'), 75)
+        # put_expected_ret_threshold = put_sample['expected_return'].quantile(0.75)
         if put_expected_ret_threshold is np.nan:
-            put_expected_ret_threshold = 0.02
+            put_expected_ret_threshold = 0.04
+        if put_expected_ret_threshold < 0.04:
+            put_expected_ret_threshold = 0.04
         self.expected_ret_threshold = {'Call': call_expected_ret_threshold, 'Put': put_expected_ret_threshold}
         logging.info('Call ret threshold = %.4f, Put ret threshold = %.4f.' % (call_expected_ret_threshold, put_expected_ret_threshold))
 
@@ -250,7 +257,7 @@ class CVolSurfaceTradingStrategy(object):
         self._load_vol_param(self.pre_trading_date)
         self._handle_arb_holding_pairs('load')
         self._calc_opt_margin()
-        self._load_expected_return_threshold(trading_day, 5)
+        self._load_expected_return_threshold(trading_day, 10)
 
     def _load_opt_basic_data(self, trading_day):
         """
@@ -264,7 +271,7 @@ class CVolSurfaceTradingStrategy(object):
                        'exercise_type', 'strike', 'multiplier', 'end_month', 'listed_date', 'expire_date',
                        'exercise_date', 'delivery_date']
         opts_basics = pd.read_csv('./data/OptBasics.csv', usecols=range(14), parse_dates=[10, 11, 12, 13],
-                                  names=header_name, dtype={'opt_code': str}, header=0)
+                                  names=header_name, dtype={'opt_code': str}, header=0, encoding='UTF-8')
         # 选取当月、次月合约
         opts_basics = opts_basics[(opts_basics.expire_date >= trading_day) & (opts_basics.listed_date <= trading_day)]
         expire_dats_used = sorted(list(set(opts_basics.expire_date)))[:2]
@@ -443,7 +450,7 @@ class CVolSurfaceTradingStrategy(object):
             opt.quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0])
         for optcode, holding in self.opt_holdings.holdings.items():
             file_path = Path(quote_path, strdate, '%s.csv' % optcode)
-            holding.COption.quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0])
+            holding.COption.quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0], encoding='UTF-8')
 
     def _load_underlying_1min_quote(self, trading_day):
         """
@@ -457,7 +464,7 @@ class CVolSurfaceTradingStrategy(object):
         quote_path = cfg.get('path', 'opt_quote_path')
         strdate = trading_day.strftime('%Y-%m-%d')
         file_path = Path(quote_path, strdate, '510050ETF.csv')
-        self.underlying_quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0])
+        self.underlying_quote_1min = pd.read_csv(file_path, usecols=range(7), index_col=0, parse_dates=[0], encoding='UTF-8')
 
     def _load_risk_free(self, trading_day):
         """
@@ -465,7 +472,7 @@ class CVolSurfaceTradingStrategy(object):
         :param trading_day: datetime.date
         :return:
         """
-        df_riskfree = pd.read_csv('./data/riskfree.csv', parse_dates=[0])
+        df_riskfree = pd.read_csv('./data/riskfree.csv', parse_dates=[0], encoding='UTF-8')
         self.risk_free = float(df_riskfree[df_riskfree.date <= trading_day].iloc[-1]['riskfree']) / 100.
 
     def _load_hist_vol(self, trading_day):
@@ -474,7 +481,7 @@ class CVolSurfaceTradingStrategy(object):
         :param trading_day: datetime.date
         :return:
         """
-        df_hist_vol = pd.read_csv('./data/Historical_Vol.csv', parse_dates=[0])
+        df_hist_vol = pd.read_csv('./data/Historical_Vol.csv', parse_dates=[0], encoding='UTF-8')
         self.hist_vol = float(df_hist_vol[df_hist_vol.date <= trading_day].iloc[-1]['HV60'])
 
     def _load_opt_holdings(self, trading_day):
@@ -533,7 +540,7 @@ class CVolSurfaceTradingStrategy(object):
             single_pair['holding_days'] = 1                                                             # 持仓天数(按交易日计算)
             self.arb_holding_pairs = self.arb_holding_pairs.append(single_pair, ignore_index=True)
             # 添加持仓
-            logging.info('建仓, 盈利空间 = %.2f.' % single_pair['profit_spread'])
+            logging.info('建仓, 盈利空间 = %.2f., 预期收益 = %.2f%%' % (single_pair['profit_spread'], single_pair['expect_return']*100))
             self.opt_holdings.update_holdings(trade_data)
             self.trade_num_in_1min += 1
         elif handle_type == 'scan':
@@ -555,23 +562,23 @@ class CVolSurfaceTradingStrategy(object):
                 self.arb_holding_pairs.loc[idx, 'profit_ratio'] = self.arb_holding_pairs.loc[idx, 'realized_profit'] / self.arb_holding_pairs.loc[idx, 'profit_spread']
                 # 如果盈利空间>0, 且已实现盈利占比>50%, 平仓
                 if self.arb_holding_pairs.loc[idx, 'profit_spread'] > 0 and self.arb_holding_pairs.loc[idx, 'profit_ratio'] > 0.5:
-                    logging.info('已实现盈利=%.2f%%>50%%, 平仓.' % (self.arb_holding_pairs.loc[idx, 'profit_ratio'] * 100))
+                    logging.info('已实现盈利=%.2f, %.2f%%>50%%, 平仓.' % (self.arb_holding_pairs.loc[idx, 'realized_profit'], self.arb_holding_pairs.loc[idx, 'profit_ratio'] * 100))
                     self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
                 # 如果盈利空间<=0, 平仓
-                if self.arb_holding_pairs.loc[idx, 'profit_spread'] <= 0:
-                    logging.info('盈利空间<0, 平仓.')
-                    self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
-                    to_be_deleted.append(idx)
-                    continue
+                # if self.arb_holding_pairs.loc[idx, 'profit_spread'] <= 0:
+                #     logging.info('盈利空间<0,实现盈利 = %.2f, 平仓.' % self.arb_holding_pairs.loc[idx, 'realized_profit'])
+                #     self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
+                #     to_be_deleted.append(idx)
+                #     continue
                 # 如果预期年化收益率小于无风险利率, 平仓
                 # if arb_pair['expect_return'] < 0.:
                 #     self._liquidate_arb_pair(arb_pair)
                 #     to_be_deleted.append(idx)
                 # 如果持有天数大于self.pair_holding_days, 平仓
                 if arb_pair['holding_days'] > self.pair_holding_days:
-                    logging.info('持有天数>2, 平仓.')
+                    logging.info('持有天数>2, 实现盈利 = %.2f, 平仓.' % self.arb_holding_pairs.loc[idx, 'realized_profit'])
                     self._liquidate_arb_pair(self.arb_holding_pairs.loc[idx])
                     to_be_deleted.append(idx)
                     continue
@@ -591,7 +598,7 @@ class CVolSurfaceTradingStrategy(object):
                                'profit_spread', 'expect_return', 'realized_profit', 'profit_ratio', 'holding_days']
             holding_filename = Path(self.opt_holdings_path, self.configname, 'arb_pairs_%s_%s.csv' % (self.portname, self.pre_trading_date.strftime('%Y%m%d')))
             if holding_filename.exists():
-                self.arb_holding_pairs = pd.read_csv(holding_filename, header=0, names=arb_pair_header, parse_dates=[0], dtype={'long_code': str, 'short_code': str})
+                self.arb_holding_pairs = pd.read_csv(holding_filename, header=0, names=arb_pair_header, parse_dates=[0], dtype={'long_code': str, 'short_code': str}, encoding='UTF-8')
                 # 将套利持仓对的‘持仓天数’增加1
                 for idx, arb_pair in self.arb_holding_pairs.iterrows():
                     # arb_pair['holding_days'] += 1
@@ -661,7 +668,7 @@ class CVolSurfaceTradingStrategy(object):
         :return:
         """
         # 1.读取标的日K线时间序列，获取标的的前收盘价
-        underlying_quote = pd.read_csv('./data/underlying_daily_quote.csv', index_col=0, parse_dates=[0])
+        underlying_quote = pd.read_csv('./data/underlying_daily_quote.csv', index_col=0, parse_dates=[0], encoding='UTF-8')
         underlying_pre_close = float(underlying_quote.loc[self.trading_date, 'pre_close'])
         # 2.读取样本期权的日行情
         cfg = ConfigParser()
@@ -781,7 +788,7 @@ class CVolSurfaceTradingStrategy(object):
                             round(short_opt_delta, 4), long_opt_code, long_opt_volume, round(long_opt_price, 4), round(long_opt_delta, 4),
                             round(profit_spread, 4), round(money_ocupied, 2), round(expected_return, 4)]
             # filepath = Path(self.opt_holdings_path, self.configname, 'trade_chance_%s.csv' % self.portname)
-            with open('./data/trade_chance_%s.csv' % self.portname, 'a', newline='') as f:
+            with open('./data/trade_chance_%s.csv' % self.portname, 'a', newline='', encoding='UTF-8') as f:
                 csv_writer = csv.writer(f)
                 csv_writer.writerow(trade_chance)
 
@@ -851,7 +858,7 @@ class CVolSurfaceTradingStrategy(object):
             holding_filename = Path(self.opt_holdings_path, self.configname, 'holding_%s_%s.csv' % (self.portname, self.trading_date.strftime('%Y%m%d')))
             self.opt_holdings.save_holdings(holding_filename)
             self._handle_arb_holding_pairs(handle_type='save')
-            time.sleep(180)
+            time.sleep(10)
 
     def trade_chance_analyzing(self):
         """波动率曲面交易机会分析"""
@@ -859,8 +866,8 @@ class CVolSurfaceTradingStrategy(object):
         trade_chance_filepath = '/Users/davidyujun/Dropbox/OptVolTrading/data/trade_chance_VolSurfaceTrade.csv'
         # 导入交易机会数据
         vs_trade_chances = pd.read_csv(trade_chance_filepath, header=0,
-                                       dtype={'short_opt_code': str, 'long_opt_code': str})
-        trading_days = pd.read_csv('/Users/davidyujun/Dropbox/OptVolTrading/data/tradingdays.csv', header=0)
+                                       dtype={'short_opt_code': str, 'long_opt_code': str}, encoding='UTF-8')
+        trading_days = pd.read_csv('/Users/davidyujun/Dropbox/OptVolTrading/data/tradingdays.csv', header=0, encoding='UTF-8')
         pre_trading_day = trading_days.iloc[0]['tradingday']
         df_tradechance_convergence = DataFrame()
         t = 0
@@ -923,5 +930,5 @@ if __name__ == '__main__':
     # print(s.monitor_data)
     # print(s.monitor_data.index)
     # s.calibrate_sv_model(datetime.date(2017, 12, 28), datetime.date(2018, 1, 2))
-    s.on_vol_trading(datetime.date(2015, 11, 25), datetime.date(2016, 12, 31))
+    s.on_vol_trading(datetime.date(2015, 11, 13), datetime.date(2015, 12, 31))
     # s.trade_chance_analyzing()

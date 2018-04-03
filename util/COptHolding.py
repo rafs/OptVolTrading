@@ -44,7 +44,7 @@ class COptHolding(object):
         """加载持仓数据,同时加载期权的分钟行情数据"""
         # 先清空持仓数据
         self.holdings = {}
-        with open(holding_filename, 'rt') as f:
+        with open(holding_filename, 'rt', encoding='UTF-8') as f:
             bIsPandLSection = False
             bIsHoldingSection = False
             while True:
@@ -99,7 +99,7 @@ class COptHolding(object):
                         # strmsg = "持仓文件：" + holding_filename + "中期权" + dict_holding['code'] + "的持仓数据重复\n"
                         strmsg = "holding data of option:%s in holding file: %s was duplicated.\n" % (dict_holding['code'], holding_filename)
                         # self.logger.error(strmsg)
-                        with open(self.logfilepath, 'at') as f:
+                        with open(self.logfilepath, 'at', encoding='UTF-8') as f:
                             f.write(strmsg)
 
     def save_holdings(self, holding_filename):
@@ -107,7 +107,7 @@ class COptHolding(object):
         # 如果当前的状态为onliquidation，那么把状态改为onposition
         if self.status == 'onliquidation':
             self.status = 'onposition'
-        with open(holding_filename, 'wt') as f:
+        with open(holding_filename, 'wt', encoding='UTF-8') as f:
             f.write('[begin of P&L]\n')
             f.write('mode=%s\n' % self.mode)
             f.write('status=%s\n' % self.status)
@@ -155,7 +155,7 @@ class COptHolding(object):
         :return:
         """
         # 1.读取标的日K线时间序列
-        underlying_quote = pd.read_csv('./data/underlying_daily_quote.csv', index_col=0, parse_dates=[0])
+        underlying_quote = pd.read_csv('./data/underlying_daily_quote.csv', index_col=0, parse_dates=[0], encoding='UTF-8')
         underlying_pre_close = float(underlying_quote.ix[trading_day, 'pre_close'])
         # 2.读取样本期权的日行情
         strdate = trading_day.strftime('%Y-%m-%d')
@@ -323,7 +323,7 @@ class COptHolding(object):
                 # self.logger.error("删除期权%s持仓数据失败！" % tradedata.code)
                 # strmsg = "删除期权%s持仓数据失败！\n" % tradedata.code
                 strmsg = "failed to delete holding data of option: %s\n" % tradedata.code
-            with open(self.logfilepath, 'at') as f:
+            with open(self.logfilepath, 'at', encoding='UTF-8') as f:
                 f.write(strmsg)
         # 如果该交易记录对应的期权持仓量<0, 修改持仓记录
         elif self.holdings[tradedata.code].holdingvol < 0:
@@ -338,7 +338,7 @@ class COptHolding(object):
         :return: 无
         """
         # 遍历期权交易数据列表，更新每条期权交易数据
-        with open(self.logfilepath, 'at') as f:
+        with open(self.logfilepath, 'at', encoding='UTF-8') as f:
             for tradedata in tradedatas:
                 log_msg = "trade info: time=%s,code=%s,tradeside=%s,openclose=%s,price=%f,vol=%d,value=%f,commission=%f\n" % \
                           (tradedata.time.strftime('%Y-%m-%d %H:%M:%S'), tradedata.code, tradedata.tradeside, tradedata.openclose,
